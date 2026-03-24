@@ -38,6 +38,7 @@ dependencies = [
     "rich>=14.0.0",
     "polars>=1.30.0",
     "grpcio>=1.73.0",
+    "grpcio-tools>=1.62.3",
 ]
 
 

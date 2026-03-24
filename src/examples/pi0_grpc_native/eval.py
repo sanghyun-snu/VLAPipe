@@ -4,36 +4,54 @@ import argparse
 import asyncio
 import uuid
 
-import torch
+from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
+from openpi.policies.aloha_policy import make_aloha_example
+from openpi.policies.droid_policy import make_droid_example
+from openpi.policies.libero_policy import make_libero_example
 
-from .utils.grpc_cache import SuffixEvalClient
-from .utils.stream_protocol import EvalRequest
-from .utils.stream_protocol import deserialize_eval_response
-from .utils.stream_protocol import serialize_eval_request
+from .utils.grpc_cache import SuffixClient
+from .utils.stream_protocol import POLICY_TYPE_NAME_TO_ENUM
+from .utils.stream_protocol import ndarray_to_proto
+from .utils.stream_protocol import proto_to_ndarray
 
 DEFAULT_SUFFIX_HOST = "127.0.0.1"
 DEFAULT_SUFFIX_PORT = 50061
-POLICY_STATE_DIM = {
-    "droid": 8,
-    "aloha": 14,
-    "libero": 8,
-}
 
 
-def make_state(policy_name: str, state_dim: int | None, seed: int) -> torch.Tensor:
-    resolved_dim = state_dim if state_dim is not None else POLICY_STATE_DIM.get(policy_name, 8)
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(seed)
-    return torch.randn(1, resolved_dim, generator=generator, dtype=torch.float32)
+def _build_policy_input(policy_name: str):
+    if policy_name == "droid":
+        example = make_droid_example()
+        return pb2.DroidInput(
+            exterior_image_left=ndarray_to_proto(example["observation/exterior_image_1_left"]),
+            wrist_image_left=ndarray_to_proto(example["observation/wrist_image_left"]),
+            joint_position=ndarray_to_proto(example["observation/joint_position"]),
+            gripper_position=ndarray_to_proto(example["observation/gripper_position"]),
+            prompt=example.get("prompt", ""),
+        )
+    if policy_name == "aloha":
+        example = make_aloha_example()
+        return pb2.AlohaInput(
+            state=ndarray_to_proto(example["state"]),
+            images={name: ndarray_to_proto(img) for name, img in example["images"].items()},
+            prompt=example.get("prompt", ""),
+        )
+    if policy_name == "libero":
+        example = make_libero_example()
+        return pb2.LiberoInput(
+            state=ndarray_to_proto(example["observation/state"]),
+            image=ndarray_to_proto(example["observation/image"]),
+            wrist_image=ndarray_to_proto(example["observation/wrist_image"]),
+            prompt=example.get("prompt", ""),
+        )
+    raise ValueError(f"Unsupported policy: {policy_name}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Eval client for suffix server")
+    parser = argparse.ArgumentParser(description="Eval client for suffix server (protobuf stub)")
     parser.add_argument("--host", default=DEFAULT_SUFFIX_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_SUFFIX_PORT)
-    parser.add_argument("--policy", default="droid")
+    parser.add_argument("--policy", choices=["droid", "aloha", "libero"], default="droid")
     parser.add_argument("--request-id", default="")
-    parser.add_argument("--state-dim", type=int, default=None)
     parser.add_argument("--num-layers", type=int, default=8)
     parser.add_argument("--hidden-size", type=int, default=64)
     parser.add_argument("--prefix-tokens", type=int, default=32)
@@ -47,11 +65,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 async def main_async(args: argparse.Namespace) -> None:
     request_id = args.request_id or str(uuid.uuid4())
-    state = make_state(args.policy, args.state_dim, seed=args.seed)
-    request = EvalRequest(
-        request_id=request_id,
-        policy_name=args.policy,
-        state=state,
+    policy_input = _build_policy_input(args.policy)
+    inference = pb2.InferenceConfig(
         num_layers=args.num_layers,
         hidden_size=args.hidden_size,
         prefix_tokens=args.prefix_tokens,
@@ -60,13 +75,25 @@ async def main_async(args: argparse.Namespace) -> None:
         poll_interval_s=args.poll_interval_s,
         seed=args.seed,
     )
-    client = SuffixEvalClient(address=f"{args.host}:{args.port}")
+    request = pb2.EvalRequest(
+        request_id=request_id,
+        policy_type=POLICY_TYPE_NAME_TO_ENUM[args.policy],
+        inference=inference,
+    )
+    if args.policy == "droid":
+        request.droid.CopyFrom(policy_input)
+    elif args.policy == "aloha":
+        request.aloha.CopyFrom(policy_input)
+    else:
+        request.libero.CopyFrom(policy_input)
+
+    client = SuffixClient(address=f"{args.host}:{args.port}")
     try:
-        response_raw = await client.evaluate(serialize_eval_request(request), timeout_s=args.timeout_s)
-        response = deserialize_eval_response(response_raw)
+        response = await client.evaluate(request, timeout_s=args.timeout_s)
+        actions = proto_to_ndarray(response.actions)
         print(f"[eval] request_id={response.request_id}")
         print(f"[eval] message={response.message}")
-        print(f"[eval] actions={response.actions.tolist()}")
+        print(f"[eval] actions={actions.tolist()}")
     finally:
         await client.close()
 

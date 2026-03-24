@@ -4,10 +4,9 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
 import torch
-
-from .stream_protocol import KVCachePayload
 
 
 class LayerStatus(str, Enum):
@@ -21,6 +20,13 @@ class LayerSnapshot:
     layer_idx: int
     status: LayerStatus
     has_cache: bool
+
+
+class LayerPayload(Protocol):
+    request_id: str
+    layer_idx: int
+    key: torch.Tensor
+    value: torch.Tensor
 
 
 class LayerState:
@@ -37,7 +43,7 @@ class LayerState:
             self._status_by_request[request_id] = {idx: LayerStatus.PENDING for idx in range(self._layer_count)}
             self._cache_by_request[request_id] = {}
 
-    async def ingest(self, payload: KVCachePayload) -> None:
+    async def ingest(self, payload: LayerPayload) -> None:
         async with self._lock:
             self._ensure_session(payload.request_id)
             self._cache_by_request[payload.request_id][payload.layer_idx] = (payload.key, payload.value)

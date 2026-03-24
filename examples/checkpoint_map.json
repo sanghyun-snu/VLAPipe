@@ -1,0 +1,12 @@
+{
+  "aloha": {
+    "checkpoint_url": "gs://openpi-assets/checkpoints/pi0_aloha_sim",
+    "checkpoint_dir": "/root/.cache/openpi/openpi-assets/checkpoints/pi0_aloha_sim",
+    "train_config": "pi0_aloha_sim"
+  },
+  "libero": {
+    "checkpoint_url": "gs://openpi-assets/checkpoints/pi05_libero",
+    "checkpoint_dir": "/root/.cache/openpi/openpi-assets/checkpoints/pi05_libero",
+    "train_config": "pi05_libero"
+  }
+}

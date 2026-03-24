@@ -4,8 +4,6 @@ from dataclasses import dataclass
 
 import torch
 
-from .stream_protocol import KVCachePayload
-
 DEFAULT_DEVICE = "cpu"
 DEFAULT_DTYPE = torch.float32
 DEFAULT_HIDDEN_SIZE = 64
@@ -88,13 +86,13 @@ def make_suffix_query_from_state(config: PipelineConfig, state: torch.Tensor, re
     return noise + (0.02 * state_bias)
 
 
-def run_prefix_layer(layer_idx: int, hidden: torch.Tensor, request_id: str = "default") -> tuple[torch.Tensor, KVCachePayload]:
+def run_prefix_layer(layer_idx: int, hidden: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     """Toy PyTorch-native prefix pass that emits per-layer KV cache."""
     scale = 1.0 + layer_idx * 0.01
     key = hidden * scale
     value = torch.tanh(hidden) * scale
     next_hidden = hidden + 0.1 * value
-    return next_hidden, KVCachePayload(request_id=request_id, layer_idx=layer_idx, key=key, value=value)
+    return next_hidden, (key, value)
 
 
 def run_suffix_layer(layer_idx: int, query: torch.Tensor, kv: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
