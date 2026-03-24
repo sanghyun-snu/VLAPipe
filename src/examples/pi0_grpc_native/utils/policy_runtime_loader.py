@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from .checkpoint_conversion import convert_jax_checkpoint_to_pytorch
+from .checkpoint_conversion import default_converted_checkpoint_dir
 from .checkpoint_runtime import resolve_runtime_checkpoint
 from .model_loader import PolicyLoadConfig
 from .model_loader import load_openpi_policy
@@ -17,19 +20,67 @@ class RuntimePolicyArgs:
     auto_download_checkpoint: bool = False
     force_download_checkpoint: bool = False
     policy_device: str | None = None
+    require_pytorch_model: bool = True
+    auto_convert_checkpoint: bool = False
+    converted_checkpoint_dir: str = ""
+    convert_precision: str = "bfloat16"
 
 
 def load_runtime_policy(args: RuntimePolicyArgs) -> Any | None:
     """Resolve checkpoint and load a real OpenPI policy when configured."""
+    def _ensure_pytorch_checkpoint(checkpoint_dir: str) -> None:
+        if not args.require_pytorch_model:
+            return
+        model_path = Path(checkpoint_dir).expanduser().resolve() / "model.safetensors"
+        if not model_path.exists():
+            raise RuntimeError(
+                f"PyTorch checkpoint required but model file not found: {model_path}. "
+                "Use converted PyTorch checkpoint containing model.safetensors."
+            )
+
+    def _resolve_pytorch_checkpoint(
+        checkpoint_dir: str | Path,
+        train_config_name: str,
+    ) -> Path:
+        raw_path = Path(checkpoint_dir).expanduser().resolve()
+        model_path = raw_path / "model.safetensors"
+        if model_path.exists():
+            return raw_path
+
+        if not args.require_pytorch_model:
+            return raw_path
+
+        converted_dir = (
+            Path(args.converted_checkpoint_dir).expanduser().resolve()
+            if args.converted_checkpoint_dir
+            else default_converted_checkpoint_dir(raw_path)
+        )
+        if (converted_dir / "model.safetensors").exists():
+            return converted_dir
+
+        if args.auto_convert_checkpoint:
+            print(f"[runtime] converting checkpoint to PyTorch: src={raw_path} dst={converted_dir}")
+            converted_dir = convert_jax_checkpoint_to_pytorch(
+                checkpoint_dir=raw_path,
+                config_name=train_config_name,
+                output_dir=converted_dir,
+                precision=args.convert_precision,
+            )
+            return converted_dir
+
+        _ensure_pytorch_checkpoint(str(raw_path))
+        return raw_path
+
     if args.policy_train_config and args.policy_checkpoint_dir:
+        checkpoint_dir = _resolve_pytorch_checkpoint(args.policy_checkpoint_dir, args.policy_train_config)
         load_config = PolicyLoadConfig(
             train_config_name=args.policy_train_config,
-            checkpoint_dir=args.policy_checkpoint_dir,
+            checkpoint_dir=checkpoint_dir,
             pytorch_device=args.policy_device,
         )
         print(
             f"[runtime] loading explicit policy config={args.policy_train_config} "
-            f"checkpoint={args.policy_checkpoint_dir}"
+            f"checkpoint={checkpoint_dir}"
         )
         return load_openpi_policy(load_config)
 
@@ -42,13 +93,14 @@ def load_runtime_policy(args: RuntimePolicyArgs) -> Any | None:
         auto_download=args.auto_download_checkpoint,
         force_download=args.force_download_checkpoint,
     )
+    checkpoint_dir = _resolve_pytorch_checkpoint(resolved.checkpoint_dir, resolved.train_config_name)
     load_config = PolicyLoadConfig(
         train_config_name=resolved.train_config_name,
-        checkpoint_dir=resolved.checkpoint_dir,
+        checkpoint_dir=checkpoint_dir,
         pytorch_device=args.policy_device,
     )
     print(
         f"[runtime] loading policy policy_name={resolved.policy_name} "
-        f"config={resolved.train_config_name} checkpoint={resolved.checkpoint_dir}"
+        f"config={resolved.train_config_name} checkpoint={checkpoint_dir}"
     )
     return load_openpi_policy(load_config)

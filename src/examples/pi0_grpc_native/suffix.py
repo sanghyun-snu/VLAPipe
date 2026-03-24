@@ -21,6 +21,7 @@ from .utils.model_helpers import run_suffix_layer
 from .utils.policy_adapter import adapt_eval_request_to_policy_input
 from .utils.policy_runtime_loader import RuntimePolicyArgs
 from .utils.policy_runtime_loader import load_runtime_policy
+from .utils.runtime_inference import run_suffix_denoise_with_cache
 from .utils.stream_protocol import ndarray_to_proto
 
 DEFAULT_SUFFIX_HOST = "127.0.0.1"
@@ -47,6 +48,8 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
                 layer_idx=chunk.layer_idx,
                 key=chunk.key,
                 value=chunk.value,
+                prefix_pad_mask=chunk.prefix_pad_mask,
+                has_prefix_pad_mask=chunk.has_prefix_pad_mask,
             )
             print(f"[suffix] received kv request={chunk.request_id} layer={chunk.layer_idx}")
 
@@ -63,9 +66,7 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
         receiver = KVCacheReceiver(layer_count=config.num_layers)
         prefix_request = pb2.PrefixRequest(
             request_id=request.request_id,
-            policy_type=request.policy_type,
-            inference=request.inference,
-            normalized_state=ndarray_to_proto(adapted.normalized_state.astype(np.float32)),
+            eval_request=request,
         )
         stream_task = asyncio.create_task(self._drain_prefix_stream(prefix_request, receiver))
         query = make_suffix_query_from_state(
@@ -73,6 +74,7 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
             state=torch.from_numpy(adapted.normalized_state).to(dtype=torch.float32),
             request_id=request.request_id,
         )
+        layer_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
 
         try:
             for layer_idx in range(config.num_layers):
@@ -82,7 +84,9 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
                     await asyncio.sleep(request.inference.poll_interval_s)
 
                 kv = await receiver.consume(request.request_id, layer_idx)
-                query = run_suffix_layer(layer_idx, query, kv)
+                layer_caches.append(kv)
+                if self._loaded_policy is None:
+                    query = run_suffix_layer(layer_idx, query, kv)
                 status = await receiver.status(request.request_id, layer_idx)
                 if status != LayerStatus.CONSUMED:
                     raise RuntimeError(f"Invalid transition request={request.request_id} layer={layer_idx} status={status}")
@@ -93,15 +97,23 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
                 stream_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await stream_task
-            await receiver.clear_session(request.request_id)
 
         if self._loaded_policy is not None:
-            policy_out = self._loaded_policy.infer(adapted.raw_policy_input)
-            actions = np.asarray(policy_out["actions"], dtype=np.float32)
-            message = f"completed policy={adapted.policy_name} model=real_policy"
+            prefix_pad_masks = await receiver.get_prefix_pad_mask(request.request_id)
+            past_key_values = tuple(layer_caches)
+            actions = run_suffix_denoise_with_cache(
+                self._loaded_policy,
+                adapted.raw_policy_input,
+                prefix_pad_masks,
+                past_key_values,
+            )
+            actions = np.asarray(actions, dtype=np.float32)
+            message = f"completed policy={adapted.policy_name} model=real_prefix_suffix"
         else:
             actions = finalize_actions(query).detach().cpu().numpy()
             message = f"completed policy={adapted.policy_name} model=toy_suffix"
+
+        await receiver.clear_session(request.request_id)
 
         return pb2.EvalResponse(
             request_id=request.request_id,

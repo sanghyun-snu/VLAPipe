@@ -27,6 +27,7 @@ class LayerPayload(Protocol):
     layer_idx: int
     key: torch.Tensor
     value: torch.Tensor
+    prefix_pad_mask: torch.Tensor | None
 
 
 class LayerState:
@@ -36,6 +37,7 @@ class LayerState:
         self._layer_count = layer_count
         self._status_by_request: dict[str, dict[int, LayerStatus]] = {}
         self._cache_by_request: dict[str, dict[int, tuple[torch.Tensor, torch.Tensor]]] = {}
+        self._prefix_pad_mask_by_request: dict[str, torch.Tensor] = {}
         self._lock = asyncio.Lock()
 
     def _ensure_session(self, request_id: str) -> None:
@@ -48,6 +50,8 @@ class LayerState:
             self._ensure_session(payload.request_id)
             self._cache_by_request[payload.request_id][payload.layer_idx] = (payload.key, payload.value)
             self._status_by_request[payload.request_id][payload.layer_idx] = LayerStatus.RECEIVED
+            if payload.prefix_pad_mask is not None:
+                self._prefix_pad_mask_by_request[payload.request_id] = payload.prefix_pad_mask
 
     async def consume(self, layer_idx: int, request_id: str = "default") -> tuple[torch.Tensor, torch.Tensor]:
         async with self._lock:
@@ -90,3 +94,10 @@ class LayerState:
         async with self._lock:
             self._status_by_request.pop(request_id, None)
             self._cache_by_request.pop(request_id, None)
+            self._prefix_pad_mask_by_request.pop(request_id, None)
+
+    async def get_prefix_pad_mask(self, request_id: str) -> torch.Tensor:
+        async with self._lock:
+            if request_id not in self._prefix_pad_mask_by_request:
+                raise KeyError(f"prefix_pad_mask missing for request {request_id}")
+            return self._prefix_pad_mask_by_request[request_id]

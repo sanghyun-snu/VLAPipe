@@ -57,12 +57,13 @@ class KVCacheReceiver:
     def __init__(self, layer_count: int) -> None:
         self._state = LayerState(layer_count)
 
-    async def ingest(self, request_id: str, layer_idx: int, key, value) -> None:
+    async def ingest(self, request_id: str, layer_idx: int, key, value, prefix_pad_mask=None, has_prefix_pad_mask: bool = False) -> None:
         payload = _KVPayload(
             request_id=request_id,
             layer_idx=layer_idx,
             key=proto_to_tensor(key),
             value=proto_to_tensor(value),
+            prefix_pad_mask=proto_to_tensor(prefix_pad_mask) if has_prefix_pad_mask and prefix_pad_mask is not None else None,
         )
         await self._state.ingest(payload)
 
@@ -78,6 +79,9 @@ class KVCacheReceiver:
     async def clear_session(self, request_id: str) -> None:
         await self._state.clear_session(request_id)
 
+    async def get_prefix_pad_mask(self, request_id: str) -> torch.Tensor:
+        return await self._state.get_prefix_pad_mask(request_id)
+
 
 @dataclass(frozen=True)
 class _KVPayload:
@@ -85,3 +89,4 @@ class _KVPayload:
     layer_idx: int
     key: torch.Tensor
     value: torch.Tensor
+    prefix_pad_mask: torch.Tensor | None = None

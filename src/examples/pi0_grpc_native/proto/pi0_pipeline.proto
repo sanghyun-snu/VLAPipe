@@ -60,9 +60,7 @@ message EvalRequest {
 
 message PrefixRequest {
   string request_id = 1;
-  PolicyType policy_type = 2;
-  InferenceConfig inference = 3;
-  NdArray normalized_state = 4;
+  EvalRequest eval_request = 2;
 }
 
 message KVCacheChunk {
@@ -70,6 +68,8 @@ message KVCacheChunk {
   int32 layer_idx = 2;
   NdArray key = 3;
   NdArray value = 4;
+  NdArray prefix_pad_mask = 5;
+  bool has_prefix_pad_mask = 6;
 }
 
 message EvalResponse {
