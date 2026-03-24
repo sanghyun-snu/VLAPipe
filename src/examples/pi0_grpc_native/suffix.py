@@ -2,26 +2,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 
 import grpc
 import numpy as np
-import torch
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
 
-from .utils.grpc_cache import KVCacheReceiver
 from .utils.grpc_cache import PrefixClient
-from .utils.layer_state import LayerStatus
-from .utils.model_helpers import PipelineConfig
-from .utils.model_helpers import finalize_actions
-from .utils.model_helpers import make_suffix_query_from_state
-from .utils.model_helpers import run_suffix_layer
 from .utils.policy_adapter import adapt_eval_request_to_policy_input
 from .utils.policy_runtime_loader import RuntimePolicyArgs
-from .utils.policy_runtime_loader import load_runtime_policy
 from .utils.runtime_inference import run_suffix_denoise_with_cache
+from .utils.split_policy_components import load_suffix_component
+from .utils.stream_protocol import proto_to_tensor
 from .utils.stream_protocol import ndarray_to_proto
 
 DEFAULT_SUFFIX_HOST = "127.0.0.1"
@@ -41,79 +34,35 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
         self._prefix_client = PrefixClient(address=prefix_address)
         self._loaded_policy = loaded_policy
 
-    async def _drain_prefix_stream(self, prefix_request: pb2.PrefixRequest, receiver: KVCacheReceiver) -> None:
-        async for chunk in self._prefix_client.stream_prefix(prefix_request, timeout_s=PREFIX_STREAM_TIMEOUT_S):
-            await receiver.ingest(
-                request_id=chunk.request_id,
-                layer_idx=chunk.layer_idx,
-                key=chunk.key,
-                value=chunk.value,
-                prefix_pad_mask=chunk.prefix_pad_mask,
-                has_prefix_pad_mask=chunk.has_prefix_pad_mask,
-            )
-            print(f"[suffix] received kv request={chunk.request_id} layer={chunk.layer_idx}")
-
     async def Evaluate(self, request: pb2.EvalRequest, _context) -> pb2.EvalResponse:
+        if self._loaded_policy is None:
+            raise RuntimeError("Suffix split component is not loaded. Start server with policy checkpoint args.")
         adapted = adapt_eval_request_to_policy_input(request)
-        config = PipelineConfig(
-            num_layers=request.inference.num_layers,
-            hidden_size=request.inference.hidden_size,
-            prefix_tokens=request.inference.prefix_tokens,
-            suffix_tokens=request.inference.suffix_tokens,
-            compute_delay_s=request.inference.compute_delay_s,
-            seed=request.inference.seed,
-        )
-        receiver = KVCacheReceiver(layer_count=config.num_layers)
         prefix_request = pb2.PrefixRequest(
             request_id=request.request_id,
             eval_request=request,
         )
-        stream_task = asyncio.create_task(self._drain_prefix_stream(prefix_request, receiver))
-        query = make_suffix_query_from_state(
-            config,
-            state=torch.from_numpy(adapted.normalized_state).to(dtype=torch.float32),
-            request_id=request.request_id,
+        layer_caches = []
+        prefix_pad_masks = None
+        async for chunk in self._prefix_client.stream_prefix(prefix_request, timeout_s=PREFIX_STREAM_TIMEOUT_S):
+            layer_caches.append((proto_to_tensor(chunk.key), proto_to_tensor(chunk.value)))
+            if chunk.has_prefix_pad_mask:
+                prefix_pad_masks = proto_to_tensor(chunk.prefix_pad_mask)
+            print(f"[suffix] received kv request={chunk.request_id} layer={chunk.layer_idx}")
+
+        if not layer_caches:
+            raise RuntimeError(f"No KV cache received from prefix for request={request.request_id}")
+        if prefix_pad_masks is None:
+            raise RuntimeError(f"Prefix pad mask not received from prefix for request={request.request_id}")
+
+        actions = run_suffix_denoise_with_cache(
+            self._loaded_policy,
+            adapted.raw_policy_input,
+            prefix_pad_masks,
+            tuple(layer_caches),
         )
-        layer_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
-
-        try:
-            for layer_idx in range(config.num_layers):
-                while not await receiver.is_ready(request.request_id, layer_idx):
-                    status = await receiver.status(request.request_id, layer_idx)
-                    print(f"[suffix] waiting request={request.request_id} layer={layer_idx} status={status.value}")
-                    await asyncio.sleep(request.inference.poll_interval_s)
-
-                kv = await receiver.consume(request.request_id, layer_idx)
-                layer_caches.append(kv)
-                if self._loaded_policy is None:
-                    query = run_suffix_layer(layer_idx, query, kv)
-                status = await receiver.status(request.request_id, layer_idx)
-                if status != LayerStatus.CONSUMED:
-                    raise RuntimeError(f"Invalid transition request={request.request_id} layer={layer_idx} status={status}")
-                print(f"[suffix] consumed request={request.request_id} layer={layer_idx}")
-            await stream_task
-        finally:
-            if not stream_task.done():
-                stream_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await stream_task
-
-        if self._loaded_policy is not None:
-            prefix_pad_masks = await receiver.get_prefix_pad_mask(request.request_id)
-            past_key_values = tuple(layer_caches)
-            actions = run_suffix_denoise_with_cache(
-                self._loaded_policy,
-                adapted.raw_policy_input,
-                prefix_pad_masks,
-                past_key_values,
-            )
-            actions = np.asarray(actions, dtype=np.float32)
-            message = f"completed policy={adapted.policy_name} model=real_prefix_suffix"
-        else:
-            actions = finalize_actions(query).detach().cpu().numpy()
-            message = f"completed policy={adapted.policy_name} model=toy_suffix"
-
-        await receiver.clear_session(request.request_id)
+        actions = np.asarray(actions, dtype=np.float32)
+        message = f"completed policy={adapted.policy_name} model=real_prefix_suffix"
 
         return pb2.EvalResponse(
             request_id=request.request_id,
@@ -160,20 +109,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-map-json", default="")
     parser.add_argument("--auto-download-checkpoint", action="store_true")
     parser.add_argument("--force-download-checkpoint", action="store_true")
+    parser.add_argument("--auto-convert-checkpoint", action="store_true")
+    parser.add_argument("--converted-checkpoint-dir", default="")
+    parser.add_argument("--convert-precision", choices=["float32", "bfloat16", "float16"], default="bfloat16")
     return parser
 
 
 def _maybe_load_policy(args: argparse.Namespace):
-    runtime_args = RuntimePolicyArgs(
-        policy_train_config=args.policy_train_config,
-        policy_checkpoint_dir=args.policy_checkpoint_dir,
-        policy_name=args.policy_name,
-        checkpoint_map_json=args.checkpoint_map_json,
-        auto_download_checkpoint=args.auto_download_checkpoint,
-        force_download_checkpoint=args.force_download_checkpoint,
-        policy_device=args.policy_device,
+    return load_suffix_component(
+        RuntimePolicyArgs(
+            policy_train_config=args.policy_train_config,
+            policy_checkpoint_dir=args.policy_checkpoint_dir,
+            policy_name=args.policy_name,
+            checkpoint_map_json=args.checkpoint_map_json,
+            auto_download_checkpoint=args.auto_download_checkpoint,
+            force_download_checkpoint=args.force_download_checkpoint,
+            policy_device=args.policy_device,
+            auto_convert_checkpoint=args.auto_convert_checkpoint,
+            converted_checkpoint_dir=args.converted_checkpoint_dir,
+            convert_precision=args.convert_precision,
+        )
     )
-    return load_runtime_policy(runtime_args)
 
 
 async def main_async(args: argparse.Namespace) -> None:

@@ -15,16 +15,6 @@ message NdArray {
   string dtype = 3;
 }
 
-message InferenceConfig {
-  int32 num_layers = 1;
-  int32 hidden_size = 2;
-  int32 prefix_tokens = 3;
-  int32 suffix_tokens = 4;
-  float compute_delay_s = 5;
-  float poll_interval_s = 6;
-  int32 seed = 7;
-}
-
 message DroidInput {
   NdArray exterior_image_left = 1;
   NdArray wrist_image_left = 2;
@@ -49,7 +39,6 @@ message LiberoInput {
 message EvalRequest {
   string request_id = 1;
   PolicyType policy_type = 2;
-  InferenceConfig inference = 3;
 
   oneof policy_input {
     DroidInput droid = 10;

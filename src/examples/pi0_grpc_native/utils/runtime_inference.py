@@ -23,17 +23,17 @@ def _tensorize_inputs(data: dict[str, Any], *, device: str) -> dict[str, Any]:
     return out
 
 
-def build_observation_from_raw(loaded_policy, raw_policy_input: dict[str, Any]):
+def build_observation_from_raw(component, raw_policy_input: dict[str, Any]):
     """Apply policy transforms and build Observation tensor object."""
-    inputs = loaded_policy._input_transform(dict(raw_policy_input))  # noqa: SLF001
-    inputs_torch = _tensorize_inputs(inputs, device=loaded_policy._pytorch_device)  # noqa: SLF001
+    inputs = component.input_transform(dict(raw_policy_input))
+    inputs_torch = _tensorize_inputs(inputs, device=component.device)
     return model_base.Observation.from_dict(inputs_torch)
 
 
-def compute_prefix_cache_from_policy(loaded_policy, raw_policy_input: dict[str, Any]) -> tuple[torch.Tensor, tuple]:
+def compute_prefix_cache_from_policy(component, raw_policy_input: dict[str, Any]) -> tuple[torch.Tensor, tuple]:
     """Run real prefix path and return `(prefix_pad_masks, past_key_values)`."""
-    model = loaded_policy._model  # noqa: SLF001
-    observation = build_observation_from_raw(loaded_policy, raw_policy_input)
+    model = component.model
+    observation = build_observation_from_raw(component, raw_policy_input)
     images, img_masks, lang_tokens, lang_masks, _state = model._preprocess_observation(observation, train=False)  # noqa: SLF001
     prefix_embs, prefix_pad_masks, prefix_att_masks = model.embed_prefix(images, img_masks, lang_tokens, lang_masks)
     prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
@@ -57,16 +57,16 @@ def extract_layer_kv(past_key_values: tuple, layer_idx: int) -> tuple[torch.Tens
     return layer_cache[0], layer_cache[1]
 
 
-def run_suffix_denoise_with_cache(loaded_policy, raw_policy_input: dict[str, Any], prefix_pad_masks: torch.Tensor, past_key_values: tuple) -> np.ndarray:
+def run_suffix_denoise_with_cache(component, raw_policy_input: dict[str, Any], prefix_pad_masks: torch.Tensor, past_key_values: tuple) -> np.ndarray:
     """Run real suffix denoising using externally provided prefix KV cache."""
-    model = loaded_policy._model  # noqa: SLF001
-    observation = build_observation_from_raw(loaded_policy, raw_policy_input)
+    model = component.model
+    observation = build_observation_from_raw(component, raw_policy_input)
     _images, _img_masks, _lang_tokens, _lang_masks, state = model._preprocess_observation(observation, train=False)  # noqa: SLF001
     bsize = state.shape[0]
     device = state.device
     actions_shape = (bsize, model.config.action_horizon, model.config.action_dim)
     noise = model.sample_noise(actions_shape, device)
-    num_steps = int(loaded_policy._sample_kwargs.get("num_steps", 10))  # noqa: SLF001
+    num_steps = int(component.sample_kwargs.get("num_steps", 10))
 
     dt = torch.tensor(-1.0 / num_steps, dtype=torch.float32, device=device)
     x_t = noise

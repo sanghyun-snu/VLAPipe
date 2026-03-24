@@ -1,10 +1,15 @@
 import dataclasses
 import logging
 import pathlib
+import uuid
 
+from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
+from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
+from examples.pi0_grpc_native.utils.stream_protocol import ndarray_to_proto
+from examples.pi0_grpc_native.utils.stream_protocol import proto_to_ndarray
 import env as _env
 from openpi_client import action_chunk_broker
-from openpi_client import websocket_client_policy as _websocket_client_policy
+import grpc
 from openpi_client.runtime import runtime as _runtime
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 import saver as _saver
@@ -20,13 +25,36 @@ class Args:
 
     action_horizon: int = 10
 
-    host: str = "0.0.0.0"
-    port: int = 8000
+    host: str = "127.0.0.1"
+    port: int = 50061
+    timeout_s: float = 30.0
 
     display: bool = False
 
 
 def main(args: Args) -> None:
+    channel = grpc.insecure_channel(f"{args.host}:{args.port}")
+    stub = pb2_grpc.SuffixServiceStub(channel)
+
+    class _AlohaGrpcPolicy:
+        def infer(self, obs: dict) -> dict:
+            request = pb2.EvalRequest(
+                request_id=str(uuid.uuid4()),
+                policy_type=pb2.POLICY_TYPE_ALOHA,
+            )
+            request.aloha.CopyFrom(
+                pb2.AlohaInput(
+                    state=ndarray_to_proto(obs["state"]),
+                    images={name: ndarray_to_proto(image) for name, image in obs["images"].items()},
+                    prompt=str(obs.get("prompt", "")),
+                )
+            )
+            response = stub.Evaluate(request, timeout=args.timeout_s)
+            return {"actions": proto_to_ndarray(response.actions)}
+
+        def reset(self) -> None:
+            return
+
     runtime = _runtime.Runtime(
         environment=_env.AlohaSimEnvironment(
             task=args.task,
@@ -34,10 +62,7 @@ def main(args: Args) -> None:
         ),
         agent=_policy_agent.PolicyAgent(
             policy=action_chunk_broker.ActionChunkBroker(
-                policy=_websocket_client_policy.WebsocketClientPolicy(
-                    host=args.host,
-                    port=args.port,
-                ),
+                policy=_AlohaGrpcPolicy(),
                 action_horizon=args.action_horizon,
             )
         ),
@@ -47,7 +72,10 @@ def main(args: Args) -> None:
         max_hz=50,
     )
 
-    runtime.run()
+    try:
+        runtime.run()
+    finally:
+        channel.close()
 
 
 if __name__ == "__main__":

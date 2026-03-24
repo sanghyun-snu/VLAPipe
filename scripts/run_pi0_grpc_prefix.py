@@ -6,7 +6,7 @@ import asyncio
 
 from examples.pi0_grpc_native.prefix import PrefixServer
 from examples.pi0_grpc_native.utils.policy_runtime_loader import RuntimePolicyArgs
-from examples.pi0_grpc_native.utils.policy_runtime_loader import load_runtime_policy
+from examples.pi0_grpc_native.utils.split_policy_components import load_prefix_component
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -42,8 +42,8 @@ def _runtime_policy_args(args: argparse.Namespace) -> RuntimePolicyArgs:
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    loaded_policy = load_runtime_policy(_runtime_policy_args(args))
-    await PrefixServer(host=args.host, port=args.port, loaded_policy=loaded_policy).serve()
+    loaded_component = load_prefix_component(_runtime_policy_args(args))
+    await PrefixServer(host=args.host, port=args.port, loaded_policy=loaded_component).serve()
 
 
 def main() -> None:

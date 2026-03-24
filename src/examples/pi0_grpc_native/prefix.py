@@ -2,33 +2,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import Iterator
 
 import grpc
-import torch
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
 
-from .utils.model_helpers import PipelineConfig
-from .utils.model_helpers import make_prefix_hidden_from_state
-from .utils.model_helpers import run_prefix_layer
 from .utils.policy_adapter import adapt_eval_request_to_policy_input
 from .utils.policy_runtime_loader import RuntimePolicyArgs
-from .utils.policy_runtime_loader import load_runtime_policy
 from .utils.runtime_inference import compute_prefix_cache_from_policy
 from .utils.runtime_inference import extract_layer_kv
+from .utils.split_policy_components import load_prefix_component
 from .utils.stream_protocol import tensor_to_proto
 
 DEFAULT_PREFIX_HOST = "127.0.0.1"
 DEFAULT_PREFIX_PORT = 50062
-
-
-def iter_toy_prefix_layers(config: PipelineConfig, request_id: str, state_tensor) -> Iterator[tuple[int, object, object]]:
-    hidden = make_prefix_hidden_from_state(config, state=state_tensor, request_id=request_id)
-    for layer_idx in range(config.num_layers):
-        hidden, (key, value) = run_prefix_layer(layer_idx, hidden)
-        yield layer_idx, key, value
 
 
 class PrefixService(pb2_grpc.PrefixServiceServicer):
@@ -39,47 +27,24 @@ class PrefixService(pb2_grpc.PrefixServiceServicer):
         eval_request = request.eval_request
         if not eval_request.request_id:
             raise ValueError("PrefixRequest.eval_request is required")
-        config = PipelineConfig(
-            num_layers=eval_request.inference.num_layers,
-            hidden_size=eval_request.inference.hidden_size,
-            prefix_tokens=eval_request.inference.prefix_tokens,
-            suffix_tokens=eval_request.inference.suffix_tokens,
-            compute_delay_s=eval_request.inference.compute_delay_s,
-            seed=eval_request.inference.seed,
-        )
+        if self._loaded_policy is None:
+            raise RuntimeError("Prefix split component is not loaded. Start server with policy checkpoint args.")
         adapted = adapt_eval_request_to_policy_input(eval_request)
         print(f"[prefix] start request={request.request_id or eval_request.request_id}")
-
-        if self._loaded_policy is None:
-            layer_iter = iter_toy_prefix_layers(
-                config,
+        prefix_pad_masks, past_key_values = compute_prefix_cache_from_policy(
+            self._loaded_policy, adapted.raw_policy_input
+        )
+        for layer_idx in range(len(past_key_values)):
+            key, value = extract_layer_kv(past_key_values, layer_idx)
+            yield pb2.KVCacheChunk(
                 request_id=eval_request.request_id,
-                state_tensor=torch.from_numpy(adapted.normalized_state).to(dtype=torch.float32),
+                layer_idx=layer_idx,
+                key=tensor_to_proto(key),
+                value=tensor_to_proto(value),
+                prefix_pad_mask=tensor_to_proto(prefix_pad_masks) if layer_idx == 0 else pb2.NdArray(),
+                has_prefix_pad_mask=(layer_idx == 0),
             )
-            for layer_idx, key, value in layer_iter:
-                yield pb2.KVCacheChunk(
-                    request_id=eval_request.request_id,
-                    layer_idx=layer_idx,
-                    key=tensor_to_proto(key),
-                    value=tensor_to_proto(value),
-                    has_prefix_pad_mask=False,
-                )
-                await asyncio.sleep(config.compute_delay_s)
-        else:
-            prefix_pad_masks, past_key_values = compute_prefix_cache_from_policy(
-                self._loaded_policy, adapted.raw_policy_input
-            )
-            for layer_idx in range(config.num_layers):
-                key, value = extract_layer_kv(past_key_values, layer_idx)
-                yield pb2.KVCacheChunk(
-                    request_id=eval_request.request_id,
-                    layer_idx=layer_idx,
-                    key=tensor_to_proto(key),
-                    value=tensor_to_proto(value),
-                    prefix_pad_mask=tensor_to_proto(prefix_pad_masks) if layer_idx == 0 else pb2.NdArray(),
-                    has_prefix_pad_mask=(layer_idx == 0),
-                )
-                await asyncio.sleep(config.compute_delay_s)
+            await asyncio.sleep(0)
         print(f"[prefix] end request={request.request_id or eval_request.request_id}")
 
 
@@ -114,6 +79,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-map-json", default="")
     parser.add_argument("--auto-download-checkpoint", action="store_true")
     parser.add_argument("--force-download-checkpoint", action="store_true")
+    parser.add_argument("--auto-convert-checkpoint", action="store_true")
+    parser.add_argument("--converted-checkpoint-dir", default="")
+    parser.add_argument("--convert-precision", choices=["float32", "bfloat16", "float16"], default="bfloat16")
     return parser
 
 
@@ -126,12 +94,15 @@ def _runtime_policy_args(args: argparse.Namespace) -> RuntimePolicyArgs:
         auto_download_checkpoint=args.auto_download_checkpoint,
         force_download_checkpoint=args.force_download_checkpoint,
         policy_device=args.policy_device,
+        auto_convert_checkpoint=args.auto_convert_checkpoint,
+        converted_checkpoint_dir=args.converted_checkpoint_dir,
+        convert_precision=args.convert_precision,
     )
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    loaded_policy = load_runtime_policy(_runtime_policy_args(args))
-    await PrefixServer(host=args.host, port=args.port, loaded_policy=loaded_policy).serve()
+    loaded_component = load_prefix_component(_runtime_policy_args(args))
+    await PrefixServer(host=args.host, port=args.port, loaded_policy=loaded_component).serve()
 
 
 def main() -> None:

@@ -13,13 +13,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=50061)
     parser.add_argument("--policy", choices=["droid", "aloha", "libero"], default="droid")
     parser.add_argument("--request-id", default="")
-    parser.add_argument("--num-layers", type=int, default=8)
-    parser.add_argument("--hidden-size", type=int, default=64)
-    parser.add_argument("--prefix-tokens", type=int, default=32)
-    parser.add_argument("--suffix-tokens", type=int, default=8)
-    parser.add_argument("--compute-delay-s", type=float, default=0.05)
-    parser.add_argument("--poll-interval-s", type=float, default=0.05)
-    parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--timeout-s", type=float, default=30.0)
     return parser
 

@@ -52,13 +52,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=DEFAULT_SUFFIX_PORT)
     parser.add_argument("--policy", choices=["droid", "aloha", "libero"], default="droid")
     parser.add_argument("--request-id", default="")
-    parser.add_argument("--num-layers", type=int, default=8)
-    parser.add_argument("--hidden-size", type=int, default=64)
-    parser.add_argument("--prefix-tokens", type=int, default=32)
-    parser.add_argument("--suffix-tokens", type=int, default=8)
-    parser.add_argument("--compute-delay-s", type=float, default=0.05)
-    parser.add_argument("--poll-interval-s", type=float, default=0.05)
-    parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--timeout-s", type=float, default=30.0)
     return parser
 
@@ -66,19 +59,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 async def main_async(args: argparse.Namespace) -> None:
     request_id = args.request_id or str(uuid.uuid4())
     policy_input = _build_policy_input(args.policy)
-    inference = pb2.InferenceConfig(
-        num_layers=args.num_layers,
-        hidden_size=args.hidden_size,
-        prefix_tokens=args.prefix_tokens,
-        suffix_tokens=args.suffix_tokens,
-        compute_delay_s=args.compute_delay_s,
-        poll_interval_s=args.poll_interval_s,
-        seed=args.seed,
-    )
     request = pb2.EvalRequest(
         request_id=request_id,
         policy_type=POLICY_TYPE_NAME_TO_ENUM[args.policy],
-        inference=inference,
     )
     if args.policy == "droid":
         request.droid.CopyFrom(policy_input)
