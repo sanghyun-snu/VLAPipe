@@ -47,6 +47,20 @@ def _load_mapping_file(mapping_path: Path) -> dict:
         return json.load(f)
 
 
+def _resolve_checkpoint_dir_from_mapping(entry: dict) -> Path:
+    # Support both old and new mapping schemas.
+    candidate = (
+        entry.get("pytorch_checkpoint_dir")
+        or entry.get("checkpoint_dir")
+        or entry.get("jax_checkpoint_dir")
+    )
+    if not candidate:
+        raise KeyError(
+            "Expected one of: pytorch_checkpoint_dir, checkpoint_dir, jax_checkpoint_dir in mapping entry."
+        )
+    return Path(candidate).expanduser().resolve()
+
+
 def download_runtime_checkpoint(policy_name: str, *, force_download: bool = False) -> ResolvedRuntimeCheckpoint:
     if policy_name not in RUNTIME_CHECKPOINTS:
         raise ValueError(f"Unsupported runtime policy '{policy_name}'. Expected one of: {tuple(RUNTIME_CHECKPOINTS)}")
@@ -78,7 +92,7 @@ def resolve_runtime_checkpoint(
         mapping = _load_mapping_file(mapping_path)
         entry = mapping.get(policy_name)
         if entry:
-            checkpoint_dir = Path(entry["checkpoint_dir"]).expanduser().resolve()
+            checkpoint_dir = _resolve_checkpoint_dir_from_mapping(entry)
             train_config_name = entry.get("train_config", spec.train_config_name)
             checkpoint_url = entry.get("checkpoint_url", spec.checkpoint_url)
             if checkpoint_dir.exists():

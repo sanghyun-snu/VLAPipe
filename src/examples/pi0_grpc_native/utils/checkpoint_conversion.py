@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import importlib
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[5]
+    return Path(__file__).resolve().parents[4]
+
+
+def _ensure_transformers_replace_installed(repo_root: Path) -> None:
+    """Install local transformers patches required by PI0Pytorch."""
+    transformers = importlib.import_module("transformers")
+    source_root = repo_root / "src" / "openpi" / "models_pytorch" / "transformers_replace"
+    target_root = Path(transformers.__file__).resolve().parent
+    for source in source_root.rglob("*"):
+        relative = source.relative_to(source_root)
+        target = target_root / relative
+        if source.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
 
 def default_converted_checkpoint_dir(checkpoint_dir: str | Path) -> Path:
@@ -28,6 +45,7 @@ def convert_jax_checkpoint_to_pytorch(
         Path(output_dir).expanduser().resolve() if output_dir is not None else default_converted_checkpoint_dir(source_dir)
     )
     converter = repo_root / "examples" / "convert_jax_model_to_pytorch.py"
+    _ensure_transformers_replace_installed(repo_root)
     command = [
         sys.executable,
         str(converter),

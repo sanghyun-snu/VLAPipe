@@ -30,6 +30,10 @@ def _targets(policy: str) -> list[str]:
 def main() -> None:
     args = build_arg_parser().parse_args()
     out: dict[str, dict[str, str]] = {}
+    if args.write_json:
+        output_path = Path(args.write_json).expanduser().resolve()
+        if output_path.exists():
+            out = json.loads(output_path.read_text(encoding="utf-8"))
     for policy_name in _targets(args.policy):
         resolved = resolve_runtime_checkpoint(
             policy_name,
