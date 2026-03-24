@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Iterable
+from dataclasses import dataclass
+from enum import Enum
+
+import torch
+
+from .stream_protocol import KVCachePayload
+
+
+class LayerStatus(str, Enum):
+    PENDING = "pending"
+    RECEIVED = "received"
+    CONSUMED = "consumed"
+
+
+@dataclass(frozen=True)
+class LayerSnapshot:
+    layer_idx: int
+    status: LayerStatus
+    has_cache: bool
+
+
+class LayerState:
+    """Tracks KV cache readiness and consumption per layer."""
+
+    def __init__(self, layer_count: int) -> None:
+        self._layer_count = layer_count
+        self._status_by_request: dict[str, dict[int, LayerStatus]] = {}
+        self._cache_by_request: dict[str, dict[int, tuple[torch.Tensor, torch.Tensor]]] = {}
+        self._lock = asyncio.Lock()
+
+    def _ensure_session(self, request_id: str) -> None:
+        if request_id not in self._status_by_request:
+            self._status_by_request[request_id] = {idx: LayerStatus.PENDING for idx in range(self._layer_count)}
+            self._cache_by_request[request_id] = {}
+
+    async def ingest(self, payload: KVCachePayload) -> None:
+        async with self._lock:
+            self._ensure_session(payload.request_id)
+            self._cache_by_request[payload.request_id][payload.layer_idx] = (payload.key, payload.value)
+            self._status_by_request[payload.request_id][payload.layer_idx] = LayerStatus.RECEIVED
+
+    async def consume(self, layer_idx: int, request_id: str = "default") -> tuple[torch.Tensor, torch.Tensor]:
+        async with self._lock:
+            self._ensure_session(request_id)
+            if self._status_by_request[request_id][layer_idx] != LayerStatus.RECEIVED:
+                raise RuntimeError(f"Layer {layer_idx} is not ready for request {request_id}")
+            kv = self._cache_by_request[request_id][layer_idx]
+            self._status_by_request[request_id][layer_idx] = LayerStatus.CONSUMED
+            return kv
+
+    async def is_ready(self, layer_idx: int, request_id: str = "default") -> bool:
+        async with self._lock:
+            self._ensure_session(request_id)
+            return self._status_by_request[request_id][layer_idx] == LayerStatus.RECEIVED
+
+    async def status(self, layer_idx: int, request_id: str = "default") -> LayerStatus:
+        async with self._lock:
+            self._ensure_session(request_id)
+            return self._status_by_request[request_id][layer_idx]
+
+    async def all_consumed(self, request_id: str = "default") -> bool:
+        async with self._lock:
+            self._ensure_session(request_id)
+            return all(state == LayerStatus.CONSUMED for state in self._status_by_request[request_id].values())
+
+    async def snapshots(self, indices: Iterable[int] | None = None, request_id: str = "default") -> list[LayerSnapshot]:
+        layer_indices = list(indices) if indices is not None else list(range(self._layer_count))
+        async with self._lock:
+            self._ensure_session(request_id)
+            return [
+                LayerSnapshot(
+                    layer_idx=layer_idx,
+                    status=self._status_by_request[request_id][layer_idx],
+                    has_cache=layer_idx in self._cache_by_request[request_id],
+                )
+                for layer_idx in layer_indices
+            ]
+
+    async def clear_session(self, request_id: str) -> None:
+        async with self._lock:
+            self._status_by_request.pop(request_id, None)
+            self._cache_by_request.pop(request_id, None)
