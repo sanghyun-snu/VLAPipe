@@ -49,13 +49,13 @@ async def smoke(args: argparse.Namespace) -> None:
     runtime_args = _runtime_policy_args(args)
     prefix_component = load_prefix_component(runtime_args)
     suffix_component = load_suffix_component(runtime_args)
-    prefix_server = PrefixServer(host="127.0.0.1", port=SMOKE_PREFIX_PORT, loaded_policy=prefix_component)
+    prefix_server = PrefixServer(host="127.0.0.1", port=SMOKE_PREFIX_PORT, loaded_component=prefix_component)
     suffix_server = SuffixServer(
         host="127.0.0.1",
         port=SMOKE_SUFFIX_PORT,
         prefix_host="127.0.0.1",
         prefix_port=SMOKE_PREFIX_PORT,
-        loaded_policy=suffix_component,
+        loaded_component=suffix_component,
     )
     await prefix_server.start()
     await suffix_server.start()
