@@ -223,6 +223,20 @@ class V2AsyncCacheStrategy:
                     ),
                 )
 
+            def _on_denoise_layer(step_idx: int, layer_idx: int, layer_s: float, is_warmup: bool) -> None:
+                self._profiler.event(
+                    request_id=request_id,
+                    pipeline="suffix",
+                    event="denoise_layer_v2",
+                    value_s=layer_s,
+                    layer_idx=layer_idx,
+                    details=(
+                        f"iteration={step_idx + 1},"
+                        f"warmup={int(is_warmup)},"
+                        f"cache_layers={cache_layers}"
+                    ),
+                )
+
             actions = run_suffix_denoise_with_cache(
                 self._loaded_component,
                 raw_policy_input,
@@ -232,6 +246,8 @@ class V2AsyncCacheStrategy:
                 request_id=request_id,
                 deterministic_noise=self._config.deterministic_noise,
                 denoise_step_callback=_on_denoise_step,
+                denoise_layer_callback=_on_denoise_layer,
+                now_fn=self._profiler.now,
             )
             await _emit("suffix_denoise_done")
             actions = np.asarray(actions, dtype=np.float32)

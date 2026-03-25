@@ -24,7 +24,10 @@ class PipelineProfiler:
                 raise ValueError("profile_log_path is required when profiling is enabled")
             log_file = Path(self._log_path)
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            self._header_written = log_file.exists() and log_file.stat().st_size > 0
+            # Overwrite profiling CSV on each process startup so each run
+            # produces an isolated, easy-to-read trace.
+            log_file.write_text("", encoding="utf-8")
+            self._header_written = False
 
     def now(self) -> float:
         return time.perf_counter()

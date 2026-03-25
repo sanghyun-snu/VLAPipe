@@ -75,6 +75,8 @@ def run_suffix_denoise_with_cache(
     request_id: str = "",
     deterministic_noise: bool = False,
     denoise_step_callback: Callable[[int, int, float, bool], None] | None = None,
+    denoise_layer_callback: Callable[[int, int, float, bool], None] | None = None,
+    now_fn: Callable[[], float] | None = None,
 ) -> np.ndarray:
     model = component.model
     transformed_inputs, observation = _prepare_component_inputs(component, raw_policy_input)
@@ -99,6 +101,8 @@ def run_suffix_denoise_with_cache(
         warmup_diffusion_steps=warmup_diffusion_steps,
         noise=noise,
         on_step=denoise_step_callback,
+        on_step_layer=denoise_layer_callback,
+        now_fn=now_fn,
     )
     actions = x_t.detach().cpu().numpy()
     if actions.ndim == 3 and actions.shape[0] == 1:

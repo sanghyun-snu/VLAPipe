@@ -96,13 +96,22 @@ class PrefixStreamSession:
 
     async def _produce_payloads(self) -> None:
         try:
-            for payload in iter_prefix_cache_payloads_from_policy(
-                self._loaded_component,
-                self._raw_policy_input,
-                request_id=self._request_id,
-                prefer_layerwise=self._config.prefer_layerwise,
-                allow_fallback=self._config.allow_fallback,
-            ):
+            payload_iter = iter(
+                iter_prefix_cache_payloads_from_policy(
+                    self._loaded_component,
+                    self._raw_policy_input,
+                    request_id=self._request_id,
+                    prefer_layerwise=self._config.prefer_layerwise,
+                    allow_fallback=self._config.allow_fallback,
+                )
+            )
+            while True:
+                produce_start_t = self._profiler.now()
+                try:
+                    payload = next(payload_iter)
+                except StopIteration:
+                    break
+                produce_s = self._profiler.now() - produce_start_t
                 self._check_request_timeout()
                 put_start_t = self._profiler.now()
                 await self._payload_queue.put(payload)
@@ -113,6 +122,7 @@ class PrefixStreamSession:
                     request_id=self._request_id,
                     pipeline="prefix",
                     event="produced_layer",
+                    value_s=produce_s,
                     layer_idx=payload.layer_idx,
                 )
                 if wait_s * 1000.0 >= self._config.queue_wait_warn_ms:
