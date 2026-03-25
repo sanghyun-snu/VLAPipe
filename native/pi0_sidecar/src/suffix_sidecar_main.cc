@@ -1,5 +1,6 @@
 #include <grpcpp/grpcpp.h>
 
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -20,6 +21,13 @@ std::string MakeKey(const openpi::native::gpuipc::PublishHandleRequest& request)
 
 class SidecarService final : public openpi::native::gpuipc::GpuIpcSidecar::Service {
  public:
+  explicit SidecarService(std::string upstream_address) : upstream_address_(std::move(upstream_address)) {
+    if (!upstream_address_.empty()) {
+      upstream_channel_ = grpc::CreateChannel(upstream_address_, grpc::InsecureChannelCredentials());
+      upstream_stub_ = openpi::native::gpuipc::GpuIpcSidecar::NewStub(upstream_channel_);
+    }
+  }
+
   grpc::Status PublishHandle(grpc::ServerContext* /*context*/,
                              const openpi::native::gpuipc::PublishHandleRequest* request,
                              openpi::native::gpuipc::PublishHandleResponse* response) override {
@@ -33,16 +41,33 @@ class SidecarService final : public openpi::native::gpuipc::GpuIpcSidecar::Servi
   grpc::Status ResolveHandle(grpc::ServerContext* /*context*/,
                              const openpi::native::gpuipc::ResolveHandleRequest* request,
                              openpi::native::gpuipc::ResolveHandleResponse* response) override {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = handles_.find(MakeKey(*request));
-    if (it == handles_.end()) {
-      response->set_found(false);
-      response->set_message("not found");
-      return grpc::Status::OK;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      auto it = handles_.find(MakeKey(*request));
+      if (it != handles_.end()) {
+        response->set_found(true);
+        *response->mutable_handle() = it->second;
+        response->set_message("ok");
+        return grpc::Status::OK;
+      }
     }
-    response->set_found(true);
-    *response->mutable_handle() = it->second;
-    response->set_message("ok");
+
+    if (upstream_stub_ != nullptr) {
+      grpc::ClientContext upstream_context;
+      openpi::native::gpuipc::ResolveHandleResponse upstream_response;
+      grpc::Status upstream_status = upstream_stub_->ResolveHandle(&upstream_context, *request, &upstream_response);
+      if (upstream_status.ok() && upstream_response.found()) {
+        std::lock_guard<std::mutex> lock(mu_);
+        handles_[MakeKey(*request)] = upstream_response.handle();
+        response->set_found(true);
+        *response->mutable_handle() = upstream_response.handle();
+        response->set_message("ok_from_upstream");
+        return grpc::Status::OK;
+      }
+    }
+
+    response->set_found(false);
+    response->set_message("not found");
     return grpc::Status::OK;
   }
 
@@ -55,6 +80,9 @@ class SidecarService final : public openpi::native::gpuipc::GpuIpcSidecar::Servi
   }
 
  private:
+  std::string upstream_address_;
+  std::shared_ptr<grpc::Channel> upstream_channel_;
+  std::unique_ptr<openpi::native::gpuipc::GpuIpcSidecar::Stub> upstream_stub_;
   std::mutex mu_;
   std::unordered_map<std::string, openpi::native::gpuipc::GpuIpcHandle> handles_;
 };
@@ -66,8 +94,13 @@ int main(int argc, char** argv) {
   if (argc >= 2) {
     bind_address = argv[1];
   }
+  const char* upstream_env = std::getenv("PI0_GPU_IPC_UPSTREAM");
+  std::string upstream_address = upstream_env == nullptr ? "" : std::string(upstream_env);
+  if (!upstream_address.empty()) {
+    std::cout << "[pi0_sidecar] suffix sidecar upstream=" << upstream_address << std::endl;
+  }
 
-  SidecarService service;
+  SidecarService service(upstream_address);
   grpc::ServerBuilder builder;
   builder.AddListeningPort(bind_address, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);

@@ -52,6 +52,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--without-sidecar", dest="with_sidecar", action="store_false")
     parser.add_argument("--sidecar-bin", default=str(DEFAULT_PREFIX_SIDECAR_BIN))
     parser.add_argument("--sidecar-address", default=DEFAULT_PREFIX_SERVICE_OPTIONS.gpu_ipc_prefix_sidecar_address)
+    parser.add_argument(
+        "--sidecar-upstream-address",
+        default="",
+        help="Reserved for option symmetry with suffix runner; unused in prefix runner.",
+    )
     parser.add_argument("--sidecar-ready-timeout-s", type=float, default=10.0)
     parser.set_defaults(
         prefer_layerwise=DEFAULT_PREFIX_SERVICE_OPTIONS.prefer_layerwise,

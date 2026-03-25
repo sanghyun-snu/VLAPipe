@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import os
 from pathlib import Path
 import socket
 
@@ -64,6 +65,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--without-sidecar", dest="with_sidecar", action="store_false")
     parser.add_argument("--sidecar-bin", default=str(DEFAULT_SUFFIX_SIDECAR_BIN))
     parser.add_argument("--sidecar-address", default=DEFAULT_SUFFIX_SERVICE_OPTIONS.gpu_ipc_suffix_sidecar_address)
+    parser.add_argument(
+        "--sidecar-upstream-address",
+        default="127.0.0.1:55062",
+        help="Upstream sidecar address for handle resolve miss forwarding.",
+    )
     parser.add_argument("--sidecar-ready-timeout-s", type=float, default=10.0)
     parser.set_defaults(
         strict_layer_ordering=DEFAULT_SUFFIX_SERVICE_OPTIONS.strict_layer_ordering,
@@ -134,14 +140,23 @@ async def _wait_for_port_ready(address: str, timeout_s: float) -> None:
     raise TimeoutError(f"sidecar not ready at {address} within {timeout_s:.1f}s: {last_error}")
 
 
-async def _start_sidecar_process(sidecar_bin: str, sidecar_address: str, ready_timeout_s: float) -> asyncio.subprocess.Process:
+async def _start_sidecar_process(
+    sidecar_bin: str,
+    sidecar_address: str,
+    ready_timeout_s: float,
+    *,
+    sidecar_upstream_address: str = "",
+) -> asyncio.subprocess.Process:
     bin_path = Path(sidecar_bin).expanduser().resolve()
     if not bin_path.exists():
         raise FileNotFoundError(
             f"suffix sidecar binary not found: {bin_path}. "
             "Build with: cmake -S native/pi0_sidecar -B build/pi0_sidecar && cmake --build build/pi0_sidecar -j"
         )
-    process = await asyncio.create_subprocess_exec(str(bin_path), sidecar_address)
+    env = None
+    if sidecar_upstream_address:
+        env = dict(**os.environ, PI0_GPU_IPC_UPSTREAM=sidecar_upstream_address)
+    process = await asyncio.create_subprocess_exec(str(bin_path), sidecar_address, env=env)
     try:
         await _wait_for_port_ready(sidecar_address, ready_timeout_s)
     except Exception:
@@ -178,6 +193,7 @@ async def main_async(args: argparse.Namespace) -> None:
             args.sidecar_bin,
             args.sidecar_address,
             args.sidecar_ready_timeout_s,
+            sidecar_upstream_address=args.sidecar_upstream_address,
         )
     elif args.kv_transfer_mode == "gpu_ipc":
         await _wait_for_port_ready(args.sidecar_address, args.sidecar_ready_timeout_s)
