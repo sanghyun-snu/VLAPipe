@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .checkpoint_conversion import convert_jax_checkpoint_to_pytorch
-from .checkpoint_conversion import default_converted_checkpoint_dir
-from .checkpoint_runtime import resolve_runtime_checkpoint
+from ..checkpoint.conversion import convert_jax_checkpoint_to_pytorch
+from ..checkpoint.conversion import default_converted_checkpoint_dir
+from ..checkpoint.runtime import resolve_runtime_checkpoint
 from .model_loader import PolicyLoadConfig
 from .model_loader import load_openpi_policy
 

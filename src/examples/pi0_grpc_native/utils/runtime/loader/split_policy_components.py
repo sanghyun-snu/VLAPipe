@@ -12,7 +12,7 @@ from openpi.models_pytorch.pi0_pytorch import PI0Pytorch
 from openpi.training import checkpoints as checkpoints_lib
 from openpi.training import config as training_config
 
-from .checkpoint_conversion import ensure_transformers_replace_installed
+from ..checkpoint.conversion import ensure_transformers_replace_installed
 from .policy_runtime_loader import RuntimePolicyArgs
 from .policy_runtime_loader import resolve_runtime_policy
 

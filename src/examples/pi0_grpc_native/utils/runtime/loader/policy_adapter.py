@@ -11,8 +11,8 @@ from openpi.policies.aloha_policy import AlohaInputs
 from openpi.policies.droid_policy import DroidInputs
 from openpi.policies.libero_policy import LiberoInputs
 
-from .stream_protocol import POLICY_TYPE_ENUM_TO_NAME
-from .stream_protocol import proto_to_ndarray
+from ...transport.stream_protocol import POLICY_TYPE_ENUM_TO_NAME
+from ...transport.stream_protocol import proto_to_ndarray
 
 
 @dataclass(frozen=True)

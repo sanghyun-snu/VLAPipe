@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import importlib
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+    return Path(__file__).resolve().parents[6]
 
 
 def ensure_transformers_replace_installed(repo_root: Path | None = None) -> None:
@@ -60,8 +60,6 @@ def convert_jax_checkpoint_to_pytorch(
         precision,
     ]
     subprocess.run(command, check=True, cwd=repo_root)
-    # The upstream converter can miss assets copy depending on checkpoint layout.
-    # Ensure norm stats/assets exist in converted checkpoint.
     source_assets = source_dir / "assets"
     if source_assets.exists():
         target_assets = target_dir / "assets"

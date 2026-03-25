@@ -48,7 +48,6 @@ def _load_mapping_file(mapping_path: Path) -> dict:
 
 
 def _resolve_checkpoint_dir_from_mapping(entry: dict) -> Path:
-    # Support both old and new mapping schemas.
     candidate = (
         entry.get("pytorch_checkpoint_dir")
         or entry.get("checkpoint_dir")

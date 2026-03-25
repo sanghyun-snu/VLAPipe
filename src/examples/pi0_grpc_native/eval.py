@@ -9,10 +9,10 @@ from openpi.policies.aloha_policy import make_aloha_example
 from openpi.policies.droid_policy import make_droid_example
 from openpi.policies.libero_policy import make_libero_example
 
-from .utils.grpc_cache import SuffixClient
-from .utils.stream_protocol import POLICY_TYPE_NAME_TO_ENUM
-from .utils.stream_protocol import ndarray_to_proto
-from .utils.stream_protocol import proto_to_ndarray
+from .utils import POLICY_TYPE_NAME_TO_ENUM
+from .utils import SuffixClient
+from .utils import ndarray_to_proto
+from .utils import proto_to_ndarray
 
 DEFAULT_SUFFIX_HOST = "127.0.0.1"
 DEFAULT_SUFFIX_PORT = 50061

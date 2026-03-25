@@ -87,7 +87,6 @@ def make_suffix_query_from_state(config: PipelineConfig, state: torch.Tensor, re
 
 
 def run_prefix_layer(layer_idx: int, hidden: torch.Tensor) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-    """Toy PyTorch-native prefix pass that emits per-layer KV cache."""
     scale = 1.0 + layer_idx * 0.01
     key = hidden * scale
     value = torch.tanh(hidden) * scale
@@ -96,7 +95,6 @@ def run_prefix_layer(layer_idx: int, hidden: torch.Tensor) -> tuple[torch.Tensor
 
 
 def run_suffix_layer(layer_idx: int, query: torch.Tensor, kv: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
-    """Toy PyTorch-native suffix layer consuming KV cache for one layer."""
     key, value = kv
     context = (key.mean(dim=1, keepdim=True) + value.mean(dim=1, keepdim=True)) / 2.0
     projected = torch.tanh(query + context)

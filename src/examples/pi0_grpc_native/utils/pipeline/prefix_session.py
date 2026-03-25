@@ -13,8 +13,8 @@ from .logging import log_prefix_start
 from .models import PrefixPipelineConfig
 from .models import PrefixStreamState
 from .profile import PipelineProfiler
-from ..runtime_inference import iter_prefix_cache_payloads_from_policy
-from ..stream_protocol import tensor_to_proto
+from ..runtime.inference.runtime_inference import iter_prefix_cache_payloads_from_policy
+from ..transport.stream_protocol import tensor_to_proto
 
 
 class PrefixStreamSession:

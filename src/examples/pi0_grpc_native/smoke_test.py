@@ -7,9 +7,9 @@ from .eval import main_async as eval_main_async
 from .eval import build_arg_parser as eval_arg_parser
 from .prefix import PrefixServer
 from .suffix import SuffixServer
-from .utils.policy_runtime_loader import RuntimePolicyArgs
-from .utils.split_policy_components import load_prefix_component
-from .utils.split_policy_components import load_suffix_component
+from .utils import RuntimePolicyArgs
+from .utils import load_prefix_component
+from .utils import load_suffix_component
 
 SMOKE_PREFIX_PORT = 50072
 SMOKE_SUFFIX_PORT = 50073

@@ -4,7 +4,7 @@ from typing import Any
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 
-from ..grpc_cache import PrefixClient
+from ..transport.grpc_cache import PrefixClient
 from .models import PrefixPipelineConfig
 from .models import SuffixPipelineConfig
 from .prefix_session import PrefixStreamSession

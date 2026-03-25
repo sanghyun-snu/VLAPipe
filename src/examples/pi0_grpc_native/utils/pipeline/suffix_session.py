@@ -17,9 +17,9 @@ from .logging import log_suffix_start
 from .models import SuffixEvalState
 from .models import SuffixPipelineConfig
 from .profile import PipelineProfiler
-from ..runtime_inference import run_suffix_denoise_with_cache
-from ..stream_protocol import ndarray_to_proto
-from ..stream_protocol import proto_to_tensor
+from ..runtime.inference.runtime_inference import run_suffix_denoise_with_cache
+from ..transport.stream_protocol import ndarray_to_proto
+from ..transport.stream_protocol import proto_to_tensor
 
 
 class SuffixEvalSession:

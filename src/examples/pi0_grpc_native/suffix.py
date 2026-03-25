@@ -7,13 +7,12 @@ import grpc
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
-
-from .utils import SuffixPipeline
-from .utils import SuffixPipelineConfig
-from .utils.grpc_cache import PrefixClient
-from .utils.policy_adapter import adapt_eval_request_to_policy_input
-from .utils.policy_runtime_loader import RuntimePolicyArgs
-from .utils.split_policy_components import load_suffix_component
+from examples.pi0_grpc_native.utils import PrefixClient
+from examples.pi0_grpc_native.utils import RuntimePolicyArgs
+from examples.pi0_grpc_native.utils import SuffixPipeline
+from examples.pi0_grpc_native.utils import SuffixPipelineConfig
+from examples.pi0_grpc_native.utils import adapt_eval_request_to_policy_input
+from examples.pi0_grpc_native.utils import load_suffix_component
 
 DEFAULT_SUFFIX_HOST = "127.0.0.1"
 DEFAULT_SUFFIX_PORT = 50061

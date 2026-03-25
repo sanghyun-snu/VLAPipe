@@ -5,8 +5,8 @@ import argparse
 import asyncio
 
 from examples.pi0_grpc_native.suffix import SuffixServer
-from examples.pi0_grpc_native.utils.policy_runtime_loader import RuntimePolicyArgs
-from examples.pi0_grpc_native.utils.split_policy_components import load_suffix_component
+from examples.pi0_grpc_native.utils import RuntimePolicyArgs
+from examples.pi0_grpc_native.utils import load_suffix_component
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
