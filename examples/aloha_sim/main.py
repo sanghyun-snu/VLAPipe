@@ -16,6 +16,17 @@ import saver as _saver
 import tyro
 
 
+def _normalize_action_chunk(actions) -> dict:
+    arr = proto_to_ndarray(actions)
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr[0]
+    elif arr.ndim == 1:
+        arr = arr[None, :]
+    if arr.ndim != 2:
+        raise ValueError(f"Unexpected action shape: {arr.shape}")
+    return {"actions": arr}
+
+
 @dataclasses.dataclass
 class Args:
     out_dir: pathlib.Path = pathlib.Path("data/aloha_sim/videos")
@@ -50,7 +61,7 @@ def main(args: Args) -> None:
                 )
             )
             response = stub.Evaluate(request, timeout=args.timeout_s)
-            return {"actions": proto_to_ndarray(response.actions)}
+            return _normalize_action_chunk(response.actions)
 
         def reset(self) -> None:
             return
@@ -80,4 +91,4 @@ def main(args: Args) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
-    tyro.cli(main)
+    main(tyro.cli(Args))

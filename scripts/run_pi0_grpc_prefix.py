@@ -16,7 +16,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-train-config", default="")
     parser.add_argument("--policy-checkpoint-dir", default="")
     parser.add_argument("--policy-device", default=None)
-    parser.add_argument("--policy-name", choices=["aloha", "libero"], default=None)
+    parser.add_argument("--policy-name", choices=["aloha", "libero"], default="libero")
     parser.add_argument("--checkpoint-map-json", default="")
     parser.add_argument("--auto-download-checkpoint", action="store_true")
     parser.add_argument("--force-download-checkpoint", action="store_true")

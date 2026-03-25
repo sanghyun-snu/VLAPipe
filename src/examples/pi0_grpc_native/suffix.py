@@ -37,6 +37,7 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
     async def Evaluate(self, request: pb2.EvalRequest, _context) -> pb2.EvalResponse:
         if self._loaded_policy is None:
             raise RuntimeError("Suffix split component is not loaded. Start server with policy checkpoint args.")
+        model_device = self._loaded_policy.device
         adapted = adapt_eval_request_to_policy_input(request)
         prefix_request = pb2.PrefixRequest(
             request_id=request.request_id,
@@ -45,9 +46,14 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
         layer_caches = []
         prefix_pad_masks = None
         async for chunk in self._prefix_client.stream_prefix(prefix_request, timeout_s=PREFIX_STREAM_TIMEOUT_S):
-            layer_caches.append((proto_to_tensor(chunk.key), proto_to_tensor(chunk.value)))
+            layer_caches.append(
+                (
+                    proto_to_tensor(chunk.key, device=model_device),
+                    proto_to_tensor(chunk.value, device=model_device),
+                )
+            )
             if chunk.has_prefix_pad_mask:
-                prefix_pad_masks = proto_to_tensor(chunk.prefix_pad_mask)
+                prefix_pad_masks = proto_to_tensor(chunk.prefix_pad_mask, device=model_device)
             print(f"[suffix] received kv request={chunk.request_id} layer={chunk.layer_idx}")
 
         if not layer_caches:
@@ -75,7 +81,14 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
 
 
 class SuffixServer:
-    def __init__(self, host: str, port: int, prefix_host: str, prefix_port: int, loaded_policy=None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        prefix_host: str,
+        prefix_port: int,
+        loaded_policy=None,
+    ) -> None:
         self._address = f"{host}:{port}"
         self._service = SuffixService(prefix_address=f"{prefix_host}:{prefix_port}", loaded_policy=loaded_policy)
         self._server = grpc.aio.server()
@@ -105,7 +118,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-train-config", default="")
     parser.add_argument("--policy-checkpoint-dir", default="")
     parser.add_argument("--policy-device", default=None)
-    parser.add_argument("--policy-name", choices=["aloha", "libero"], default=None)
+    parser.add_argument("--policy-name", choices=["aloha", "libero"], default="libero")
     parser.add_argument("--checkpoint-map-json", default="")
     parser.add_argument("--auto-download-checkpoint", action="store_true")
     parser.add_argument("--force-download-checkpoint", action="store_true")
@@ -115,25 +128,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _maybe_load_policy(args: argparse.Namespace):
-    return load_suffix_component(
+async def main_async(args: argparse.Namespace) -> None:
+    loaded_policy = load_suffix_component(
         RuntimePolicyArgs(
-            policy_train_config=args.policy_train_config,
-            policy_checkpoint_dir=args.policy_checkpoint_dir,
-            policy_name=args.policy_name,
-            checkpoint_map_json=args.checkpoint_map_json,
-            auto_download_checkpoint=args.auto_download_checkpoint,
-            force_download_checkpoint=args.force_download_checkpoint,
-            policy_device=args.policy_device,
-            auto_convert_checkpoint=args.auto_convert_checkpoint,
-            converted_checkpoint_dir=args.converted_checkpoint_dir,
-            convert_precision=args.convert_precision,
+        policy_train_config=args.policy_train_config,
+        policy_checkpoint_dir=args.policy_checkpoint_dir,
+        policy_name=args.policy_name,
+        checkpoint_map_json=args.checkpoint_map_json,
+        auto_download_checkpoint=args.auto_download_checkpoint,
+        force_download_checkpoint=args.force_download_checkpoint,
+        policy_device=args.policy_device,
+        auto_convert_checkpoint=args.auto_convert_checkpoint,
+        converted_checkpoint_dir=args.converted_checkpoint_dir,
+        convert_precision=args.convert_precision,
         )
     )
-
-
-async def main_async(args: argparse.Namespace) -> None:
-    loaded_policy = _maybe_load_policy(args)
     await SuffixServer(
         host=args.host,
         port=args.port,

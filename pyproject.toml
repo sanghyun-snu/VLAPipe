@@ -39,6 +39,7 @@ dependencies = [
     "polars>=1.30.0",
     "grpcio>=1.73.0",
     "grpcio-tools>=1.62.3",
+    "libero>=0.1.1",
 ]
 
 

@@ -23,6 +23,21 @@ LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 
 
+def _normalize_action_chunk(actions: np.ndarray) -> np.ndarray:
+    arr = np.asarray(actions)
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr[0]
+    elif arr.ndim == 1:
+        arr = arr[None, :]
+    if arr.ndim != 2:
+        raise ValueError(f"Unexpected action shape: {arr.shape}")
+    if arr.shape[1] < 7:
+        raise ValueError(f"Unexpected action width: {arr.shape[1]}, expected >= 7")
+    # Libero environments consume 7-DoF actions.
+    arr = arr[:, :7]
+    return np.asarray(arr, dtype=np.float32)
+
+
 @dataclasses.dataclass
 class Args:
     #################################################################################################################
@@ -41,7 +56,7 @@ class Args:
         "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     )
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
-    num_trials_per_task: int = 50  # Number of rollouts per task
+    num_trials_per_task: int = 3  # Number of rollouts per task
 
     #################################################################################################################
     # Utils
@@ -158,7 +173,7 @@ def eval_libero(args: Args) -> None:
                                 )
                             )
                             response = stub.Evaluate(request, timeout=args.timeout_s)
-                            action_chunk = proto_to_ndarray(response.actions)
+                            action_chunk = _normalize_action_chunk(proto_to_ndarray(response.actions))
                             assert (
                                 len(action_chunk) >= args.replan_steps
                             ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
@@ -235,4 +250,4 @@ def _quat2axisangle(quat):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    tyro.cli(eval_libero)
+    eval_libero(tyro.cli(Args))
