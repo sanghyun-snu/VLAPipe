@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
-from examples.pi0_grpc_native.utils.pipeline_models import PrefixPipelineConfig
-from examples.pi0_grpc_native.utils.pipeline_models import SuffixPipelineConfig
-from examples.pi0_grpc_native.utils.pipeline_prefix import PrefixStreamSession
-from examples.pi0_grpc_native.utils.pipeline_suffix import SuffixEvalSession
 
-from .grpc_cache import PrefixClient
+from ..grpc_cache import PrefixClient
+from .models import PrefixPipelineConfig
+from .models import SuffixPipelineConfig
+from .prefix_session import PrefixStreamSession
+from .profile import PipelineProfiler
+from .profile import PipelineProfilerConfig
+from .suffix_session import SuffixEvalSession
 
 
 class PrefixPipeline:
@@ -21,6 +23,9 @@ class PrefixPipeline:
             raise ValueError(f"request_timeout_s must be >= 0, got {config.request_timeout_s}")
         self._loaded_component = loaded_component
         self._config = config
+        self._profiler = PipelineProfiler(
+            PipelineProfilerConfig(enabled=config.enable_profiling, log_path=config.profile_log_path)
+        )
 
     async def stream_kv(self, request_id: str, raw_policy_input: dict[str, Any], context):
         session = PrefixStreamSession(
@@ -29,6 +34,7 @@ class PrefixPipeline:
             request_id=request_id,
             raw_policy_input=raw_policy_input,
             context=context,
+            profiler=self._profiler,
         )
         async for chunk in session.run():
             yield chunk
@@ -41,6 +47,9 @@ class SuffixPipeline:
         self._prefix_client = prefix_client
         self._loaded_component = loaded_component
         self._config = config
+        self._profiler = PipelineProfiler(
+            PipelineProfilerConfig(enabled=config.enable_profiling, log_path=config.profile_log_path)
+        )
 
     async def evaluate(self, request: pb2.EvalRequest, raw_policy_input: dict[str, Any], policy_name: str, context):
         session = SuffixEvalSession(
@@ -51,6 +60,7 @@ class SuffixPipeline:
             raw_policy_input=raw_policy_input,
             policy_name=policy_name,
             context=context,
+            profiler=self._profiler,
         )
         return await session.run()
 

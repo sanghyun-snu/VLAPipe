@@ -8,9 +8,9 @@ import grpc
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
 
-from .utils.policy_adapter import adapt_eval_request_to_policy_input
 from .utils import PrefixPipeline
 from .utils import PrefixPipelineConfig
+from .utils.policy_adapter import adapt_eval_request_to_policy_input
 from .utils.policy_runtime_loader import RuntimePolicyArgs
 from .utils.split_policy_components import load_prefix_component
 
@@ -19,6 +19,8 @@ DEFAULT_PREFIX_PORT = 50062
 DEFAULT_STREAM_QUEUE_SIZE = 2
 DEFAULT_QUEUE_WAIT_WARN_MS = 10.0
 DEFAULT_PREFIX_REQUEST_TIMEOUT_S = 0.0
+DEFAULT_ENABLE_PROFILING = False
+DEFAULT_PROFILE_LOG_PATH = ""
 
 
 class PrefixService(pb2_grpc.PrefixServiceServicer):
@@ -31,6 +33,8 @@ class PrefixService(pb2_grpc.PrefixServiceServicer):
         allow_fallback: bool = True,
         queue_wait_warn_ms: float = DEFAULT_QUEUE_WAIT_WARN_MS,
         request_timeout_s: float = DEFAULT_PREFIX_REQUEST_TIMEOUT_S,
+        enable_profiling: bool = DEFAULT_ENABLE_PROFILING,
+        profile_log_path: str = DEFAULT_PROFILE_LOG_PATH,
     ) -> None:
         if stream_queue_size <= 0:
             raise ValueError(f"stream_queue_size must be > 0, got {stream_queue_size}")
@@ -46,6 +50,8 @@ class PrefixService(pb2_grpc.PrefixServiceServicer):
                 allow_fallback=allow_fallback,
                 queue_wait_warn_ms=queue_wait_warn_ms,
                 request_timeout_s=request_timeout_s,
+                enable_profiling=enable_profiling,
+                profile_log_path=profile_log_path,
             ),
         )
 
@@ -74,6 +80,8 @@ class PrefixServer:
         allow_fallback: bool = True,
         queue_wait_warn_ms: float = DEFAULT_QUEUE_WAIT_WARN_MS,
         request_timeout_s: float = DEFAULT_PREFIX_REQUEST_TIMEOUT_S,
+        enable_profiling: bool = DEFAULT_ENABLE_PROFILING,
+        profile_log_path: str = DEFAULT_PROFILE_LOG_PATH,
     ) -> None:
         self._address = f"{host}:{port}"
         self._server = grpc.aio.server()
@@ -85,6 +93,8 @@ class PrefixServer:
                 allow_fallback=allow_fallback,
                 queue_wait_warn_ms=queue_wait_warn_ms,
                 request_timeout_s=request_timeout_s,
+                enable_profiling=enable_profiling,
+                profile_log_path=profile_log_path,
             ),
             self._server,
         )
@@ -124,6 +134,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-layerwise", dest="prefer_layerwise", action="store_false")
     parser.add_argument("--allow-fallback", dest="allow_fallback", action="store_true")
     parser.add_argument("--disable-fallback", dest="allow_fallback", action="store_false")
+    parser.add_argument("--enable-profiling", action="store_true")
+    parser.add_argument("--profile-log-path", default=DEFAULT_PROFILE_LOG_PATH)
     parser.set_defaults(prefer_layerwise=True, allow_fallback=True)
     return parser
 
@@ -154,6 +166,8 @@ async def main_async(args: argparse.Namespace) -> None:
         allow_fallback=args.allow_fallback,
         queue_wait_warn_ms=args.queue_wait_warn_ms,
         request_timeout_s=args.request_timeout_s,
+        enable_profiling=args.enable_profiling,
+        profile_log_path=args.profile_log_path,
     ).serve()
 
 

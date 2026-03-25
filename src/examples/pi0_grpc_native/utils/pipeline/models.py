@@ -10,6 +10,8 @@ class PrefixPipelineConfig:
     allow_fallback: bool = True
     queue_wait_warn_ms: float = 10.0
     request_timeout_s: float = 0.0
+    enable_profiling: bool = False
+    profile_log_path: str = ""
 
 
 @dataclass
@@ -26,6 +28,8 @@ class PrefixStreamState:
 class SuffixPipelineConfig:
     prefix_stream_timeout_s: float = 30.0
     strict_layer_ordering: bool = True
+    enable_profiling: bool = False
+    profile_log_path: str = ""
 
 
 @dataclass

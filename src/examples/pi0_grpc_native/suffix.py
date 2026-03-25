@@ -21,6 +21,8 @@ DEFAULT_PREFIX_HOST = "127.0.0.1"
 DEFAULT_PREFIX_PORT = 50062
 DEFAULT_PREFIX_STREAM_TIMEOUT_S = 30.0
 DEFAULT_STRICT_LAYER_ORDERING = True
+DEFAULT_ENABLE_PROFILING = False
+DEFAULT_PROFILE_LOG_PATH = ""
 
 
 class SuffixService(pb2_grpc.SuffixServiceServicer):
@@ -31,6 +33,8 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
         loaded_component=None,
         prefix_stream_timeout_s: float = DEFAULT_PREFIX_STREAM_TIMEOUT_S,
         strict_layer_ordering: bool = DEFAULT_STRICT_LAYER_ORDERING,
+        enable_profiling: bool = DEFAULT_ENABLE_PROFILING,
+        profile_log_path: str = DEFAULT_PROFILE_LOG_PATH,
     ) -> None:
         if prefix_stream_timeout_s <= 0:
             raise ValueError(f"prefix_stream_timeout_s must be > 0, got {prefix_stream_timeout_s}")
@@ -40,6 +44,8 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
             config=SuffixPipelineConfig(
                 prefix_stream_timeout_s=prefix_stream_timeout_s,
                 strict_layer_ordering=strict_layer_ordering,
+                enable_profiling=enable_profiling,
+                profile_log_path=profile_log_path,
             ),
         )
 
@@ -67,6 +73,8 @@ class SuffixServer:
         *,
         prefix_stream_timeout_s: float = DEFAULT_PREFIX_STREAM_TIMEOUT_S,
         strict_layer_ordering: bool = DEFAULT_STRICT_LAYER_ORDERING,
+        enable_profiling: bool = DEFAULT_ENABLE_PROFILING,
+        profile_log_path: str = DEFAULT_PROFILE_LOG_PATH,
     ) -> None:
         self._address = f"{host}:{port}"
         self._service = SuffixService(
@@ -74,6 +82,8 @@ class SuffixServer:
             loaded_component=loaded_component,
             prefix_stream_timeout_s=prefix_stream_timeout_s,
             strict_layer_ordering=strict_layer_ordering,
+            enable_profiling=enable_profiling,
+            profile_log_path=profile_log_path,
         )
         self._server = grpc.aio.server()
         pb2_grpc.add_SuffixServiceServicer_to_server(self._service, self._server)
@@ -112,6 +122,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prefix-stream-timeout-s", type=float, default=DEFAULT_PREFIX_STREAM_TIMEOUT_S)
     parser.add_argument("--strict-layer-ordering", dest="strict_layer_ordering", action="store_true")
     parser.add_argument("--disable-strict-layer-ordering", dest="strict_layer_ordering", action="store_false")
+    parser.add_argument("--enable-profiling", action="store_true")
+    parser.add_argument("--profile-log-path", default=DEFAULT_PROFILE_LOG_PATH)
     parser.set_defaults(strict_layer_ordering=DEFAULT_STRICT_LAYER_ORDERING)
     return parser
 
@@ -139,6 +151,8 @@ async def main_async(args: argparse.Namespace) -> None:
         loaded_component=loaded_component,
         prefix_stream_timeout_s=args.prefix_stream_timeout_s,
         strict_layer_ordering=args.strict_layer_ordering,
+        enable_profiling=args.enable_profiling,
+        profile_log_path=args.profile_log_path,
     ).serve()
 
 

@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
 from typing import Any
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 
-from .pipeline_logging import log_prefix_backpressure
-from .pipeline_logging import log_prefix_emit
-from .pipeline_logging import log_prefix_end
-from .pipeline_logging import log_prefix_start
-from .pipeline_models import PrefixPipelineConfig
-from .pipeline_models import PrefixStreamState
-from .runtime_inference import iter_prefix_cache_payloads_from_policy
-from .stream_protocol import tensor_to_proto
+from .logging import log_prefix_backpressure
+from .logging import log_prefix_emit
+from .logging import log_prefix_end
+from .logging import log_prefix_start
+from .models import PrefixPipelineConfig
+from .models import PrefixStreamState
+from .profile import PipelineProfiler
+from ..runtime_inference import iter_prefix_cache_payloads_from_policy
+from ..stream_protocol import tensor_to_proto
 
 
 class PrefixStreamSession:
@@ -25,13 +25,15 @@ class PrefixStreamSession:
         request_id: str,
         raw_policy_input: dict[str, Any],
         context,
+        profiler: PipelineProfiler,
     ) -> None:
         self._loaded_component = loaded_component
         self._config = config
         self._request_id = request_id
         self._raw_policy_input = raw_policy_input
         self._context = context
-        self._start_t = time.perf_counter()
+        self._profiler = profiler
+        self._start_t = self._profiler.now()
         self._state = PrefixStreamState()
         self._payload_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=self._config.stream_queue_size)
         self._sentinel = object()
@@ -41,6 +43,7 @@ class PrefixStreamSession:
         if self._loaded_component is None:
             raise RuntimeError("Prefix split component is not loaded. Start server with component checkpoint args.")
         log_prefix_start(self._request_id, self._config)
+        self._profiler.event(request_id=self._request_id, pipeline="prefix", event="start")
         self._producer_task = asyncio.create_task(
             self._produce_payloads(),
             name=f"prefix-producer-{self._request_id}",
@@ -50,9 +53,16 @@ class PrefixStreamSession:
                 yield chunk
             if self._state.producer_error is not None:
                 err = self._state.producer_error
+                self._profiler.event(
+                    request_id=self._request_id,
+                    pipeline="prefix",
+                    event="producer_error",
+                    details=str(err),
+                )
                 raise RuntimeError(f"Prefix producer failed request_id={self._request_id}: {err}") from err
-            total_s = time.perf_counter() - self._start_t
+            total_s = self._profiler.now() - self._start_t
             log_prefix_end(self._request_id, self._state, total_s)
+            self._profiler.event(request_id=self._request_id, pipeline="prefix", event="end", value_s=total_s)
         finally:
             if self._producer_task is not None and not self._producer_task.done():
                 self._producer_task.cancel()
@@ -63,8 +73,14 @@ class PrefixStreamSession:
     def _check_request_timeout(self) -> None:
         if self._config.request_timeout_s <= 0:
             return
-        elapsed_s = time.perf_counter() - self._start_t
+        elapsed_s = self._profiler.now() - self._start_t
         if elapsed_s > self._config.request_timeout_s:
+            self._profiler.event(
+                request_id=self._request_id,
+                pipeline="prefix",
+                event="timeout",
+                value_s=elapsed_s,
+            )
             raise TimeoutError(
                 f"Prefix stream timeout request_id={self._request_id} "
                 f"elapsed={elapsed_s:.3f}s timeout={self._config.request_timeout_s:.3f}s"
@@ -80,13 +96,26 @@ class PrefixStreamSession:
                 allow_fallback=self._config.allow_fallback,
             ):
                 self._check_request_timeout()
-                put_start_t = time.perf_counter()
+                put_start_t = self._profiler.now()
                 await self._payload_queue.put(payload)
-                wait_s = time.perf_counter() - put_start_t
+                wait_s = self._profiler.now() - put_start_t
                 self._state.queue_wait_s += wait_s
                 self._state.produced_layers += 1
+                self._profiler.event(
+                    request_id=self._request_id,
+                    pipeline="prefix",
+                    event="produced_layer",
+                    layer_idx=payload.layer_idx,
+                )
                 if wait_s * 1000.0 >= self._config.queue_wait_warn_ms:
                     log_prefix_backpressure(self._request_id, payload.layer_idx, wait_s * 1000.0)
+                    self._profiler.event(
+                        request_id=self._request_id,
+                        pipeline="prefix",
+                        event="queue_backpressure",
+                        value_s=wait_s,
+                        layer_idx=payload.layer_idx,
+                    )
         except Exception as exc:  # noqa: BLE001
             self._state.producer_error = exc
         finally:
@@ -97,17 +126,29 @@ class PrefixStreamSession:
             self._check_request_timeout()
             context_cancelled = getattr(self._context, "cancelled", None)
             if callable(context_cancelled) and context_cancelled():
+                self._profiler.event(
+                    request_id=self._request_id,
+                    pipeline="prefix",
+                    event="cancelled",
+                )
                 raise asyncio.CancelledError(f"Prefix stream cancelled by client request_id={self._request_id}")
             queued = await self._payload_queue.get()
             if queued is self._sentinel:
                 break
             payload = queued
-            emit_s = time.perf_counter() - self._start_t
+            emit_s = self._profiler.now() - self._start_t
             if self._state.first_emit_s is None:
                 self._state.first_emit_s = emit_s
             self._state.last_emit_s = emit_s
             self._state.emitted_layers += 1
             log_prefix_emit(payload.request_id, payload.layer_idx)
+            self._profiler.event(
+                request_id=self._request_id,
+                pipeline="prefix",
+                event="emitted_layer",
+                value_s=emit_s,
+                layer_idx=payload.layer_idx,
+            )
             yield pb2.KVCacheChunk(
                 request_id=payload.request_id,
                 layer_idx=payload.layer_idx,

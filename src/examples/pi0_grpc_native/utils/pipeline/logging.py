@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from .pipeline_models import PrefixPipelineConfig
-from .pipeline_models import PrefixStreamState
-from .pipeline_models import SuffixEvalState
-from .pipeline_models import SuffixPipelineConfig
+from .models import PrefixPipelineConfig
+from .models import PrefixStreamState
+from .models import SuffixEvalState
+from .models import SuffixPipelineConfig
 
 
 def log_prefix_start(request_id: str, config: PrefixPipelineConfig) -> None:

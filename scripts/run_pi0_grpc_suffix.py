@@ -29,6 +29,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prefix-stream-timeout-s", type=float, default=30.0)
     parser.add_argument("--strict-layer-ordering", dest="strict_layer_ordering", action="store_true")
     parser.add_argument("--disable-strict-layer-ordering", dest="strict_layer_ordering", action="store_false")
+    parser.add_argument("--enable-profiling", action="store_true")
+    parser.add_argument("--profile-log-path", default="")
     parser.set_defaults(strict_layer_ordering=True)
     return parser
 
@@ -58,6 +60,8 @@ async def main_async(args: argparse.Namespace) -> None:
         loaded_component=loaded_component,
         prefix_stream_timeout_s=args.prefix_stream_timeout_s,
         strict_layer_ordering=args.strict_layer_ordering,
+        enable_profiling=args.enable_profiling,
+        profile_log_path=args.profile_log_path,
     ).serve()
 
 

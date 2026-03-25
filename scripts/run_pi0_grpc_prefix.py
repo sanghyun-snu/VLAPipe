@@ -30,6 +30,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-layerwise", dest="prefer_layerwise", action="store_false")
     parser.add_argument("--allow-fallback", dest="allow_fallback", action="store_true")
     parser.add_argument("--disable-fallback", dest="allow_fallback", action="store_false")
+    parser.add_argument("--enable-profiling", action="store_true")
+    parser.add_argument("--profile-log-path", default="")
     parser.set_defaults(prefer_layerwise=True, allow_fallback=True)
     return parser
 
@@ -60,6 +62,8 @@ async def main_async(args: argparse.Namespace) -> None:
         allow_fallback=args.allow_fallback,
         queue_wait_warn_ms=args.queue_wait_warn_ms,
         request_timeout_s=args.request_timeout_s,
+        enable_profiling=args.enable_profiling,
+        profile_log_path=args.profile_log_path,
     ).serve()
 
 
