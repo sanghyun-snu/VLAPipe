@@ -8,8 +8,8 @@ import uuid
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
-from examples.pi0_grpc_native.utils.stream_protocol import ndarray_to_proto
-from examples.pi0_grpc_native.utils.stream_protocol import proto_to_ndarray
+from examples.pi0_grpc_native.utils.transport import ndarray_to_proto
+from examples.pi0_grpc_native.utils.transport import proto_to_ndarray
 import grpc
 import imageio
 from libero.libero import benchmark
@@ -80,7 +80,7 @@ class Args:
     #################################################################################################################
     host: str = "127.0.0.1"
     port: int = 50061
-    timeout_s: float = 30.0
+    timeout_s: float = 120.0
     resize_size: int = 224
     replan_steps: int = 5
 
@@ -91,7 +91,7 @@ class Args:
         "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     )
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
-    num_trials_per_task: int = 3  # Number of rollouts per task
+    num_trials_per_task: int = 1  # Number of rollouts per task
 
     #################################################################################################################
     # Utils

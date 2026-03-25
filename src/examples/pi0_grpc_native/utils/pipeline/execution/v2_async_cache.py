@@ -73,10 +73,6 @@ class V2AsyncCacheStrategy:
                 raise RuntimeError("prefix_pad_mask not available yet")
             if epoch_layers <= 0:
                 raise RuntimeError("epoch_layers must be > 0")
-            if not self._config.allow_stale_cache and epoch_layers < expected_num_layers:
-                raise RuntimeError(
-                    f"stale cache snapshot not allowed: epoch_layers={epoch_layers} expected_layers={expected_num_layers}"
-                )
             if 0 not in layer_map:
                 raise RuntimeError("layer 0 cache missing")
             fallback_cache = layer_map[max(0, epoch_layers - 1)]
@@ -120,8 +116,11 @@ class V2AsyncCacheStrategy:
                     await _emit("layer_received", layer_idx=layer_idx, cache_epoch=epoch_layers)
                     if prefix_pad_mask is None or epoch_layers <= 0:
                         continue
-                    snapshot = _build_snapshot(epoch_layers)
                     is_final = epoch_layers >= expected_num_layers
+                    if not self._config.allow_stale_cache and not is_final:
+                        # Strict mode: publish only final/full cache snapshot.
+                        continue
+                    snapshot = _build_snapshot(epoch_layers)
                     await kv_store.publish(
                         epoch=epoch_layers,
                         snapshot=snapshot,

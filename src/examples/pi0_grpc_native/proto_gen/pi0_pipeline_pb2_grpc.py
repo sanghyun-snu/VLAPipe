@@ -2,7 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-import pi0_pipeline_pb2 as pi0__pipeline__pb2
+from . import pi0_pipeline_pb2 as pi0__pipeline__pb2
 
 
 class PrefixServiceStub(object):

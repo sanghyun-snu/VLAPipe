@@ -5,8 +5,8 @@ import uuid
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
-from examples.pi0_grpc_native.utils.stream_protocol import ndarray_to_proto
-from examples.pi0_grpc_native.utils.stream_protocol import proto_to_ndarray
+from examples.pi0_grpc_native.utils.transport import ndarray_to_proto
+from examples.pi0_grpc_native.utils.transport import proto_to_ndarray
 import env as _env
 from openpi_client import action_chunk_broker
 import grpc
