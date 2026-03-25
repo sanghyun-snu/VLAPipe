@@ -44,10 +44,25 @@ def compute_prefix_cache_from_policy(component, raw_policy_input: dict[str, Any]
     return run_prefix_forward(component.model, observation)
 
 
-def iter_prefix_cache_payloads_from_policy(component, raw_policy_input: dict[str, Any], request_id: str):
-    """Yield per-layer prefix KV payloads from policy input."""
+def iter_prefix_cache_payloads_from_policy(
+    component,
+    raw_policy_input: dict[str, Any],
+    request_id: str,
+    *,
+    prefer_layerwise: bool = True,
+    allow_fallback: bool = True,
+):
+    """Yield per-layer prefix KV payloads from policy input via scheduler API."""
+    if not request_id:
+        raise ValueError("request_id must be non-empty")
     observation = build_observation_from_raw(component, raw_policy_input)
-    yield from iter_prefix_forward_payloads(component.model, observation, request_id=request_id)
+    yield from iter_prefix_forward_payloads(
+        component.model,
+        observation,
+        request_id=request_id,
+        prefer_layerwise=prefer_layerwise,
+        allow_fallback=allow_fallback,
+    )
 
 
 def run_suffix_denoise_with_cache(component, raw_policy_input: dict[str, Any], prefix_pad_masks: torch.Tensor, past_key_values: tuple) -> np.ndarray:

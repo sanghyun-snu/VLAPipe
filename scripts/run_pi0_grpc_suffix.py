@@ -26,6 +26,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-convert-checkpoint", action="store_true")
     parser.add_argument("--converted-checkpoint-dir", default="")
     parser.add_argument("--convert-precision", choices=["float32", "bfloat16", "float16"], default="bfloat16")
+    parser.add_argument("--prefix-stream-timeout-s", type=float, default=30.0)
+    parser.add_argument("--strict-layer-ordering", dest="strict_layer_ordering", action="store_true")
+    parser.add_argument("--disable-strict-layer-ordering", dest="strict_layer_ordering", action="store_false")
+    parser.set_defaults(strict_layer_ordering=True)
     return parser
 
 
@@ -45,13 +49,15 @@ def _runtime_policy_args(args: argparse.Namespace) -> RuntimePolicyArgs:
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    loaded_policy = load_suffix_component(_runtime_policy_args(args))
+    loaded_component = load_suffix_component(_runtime_policy_args(args))
     await SuffixServer(
         host=args.host,
         port=args.port,
         prefix_host=args.prefix_host,
         prefix_port=args.prefix_port,
-        loaded_policy=loaded_policy,
+        loaded_component=loaded_component,
+        prefix_stream_timeout_s=args.prefix_stream_timeout_s,
+        strict_layer_ordering=args.strict_layer_ordering,
     ).serve()
 
 

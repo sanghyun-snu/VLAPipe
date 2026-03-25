@@ -23,6 +23,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-convert-checkpoint", action="store_true")
     parser.add_argument("--converted-checkpoint-dir", default="")
     parser.add_argument("--convert-precision", choices=["float32", "bfloat16", "float16"], default="bfloat16")
+    parser.add_argument("--stream-queue-size", type=int, default=2)
+    parser.add_argument("--queue-wait-warn-ms", type=float, default=10.0)
+    parser.add_argument("--request-timeout-s", type=float, default=0.0)
+    parser.add_argument("--prefer-layerwise", dest="prefer_layerwise", action="store_true")
+    parser.add_argument("--disable-layerwise", dest="prefer_layerwise", action="store_false")
+    parser.add_argument("--allow-fallback", dest="allow_fallback", action="store_true")
+    parser.add_argument("--disable-fallback", dest="allow_fallback", action="store_false")
+    parser.set_defaults(prefer_layerwise=True, allow_fallback=True)
     return parser
 
 
@@ -43,7 +51,16 @@ def _runtime_policy_args(args: argparse.Namespace) -> RuntimePolicyArgs:
 
 async def main_async(args: argparse.Namespace) -> None:
     loaded_component = load_prefix_component(_runtime_policy_args(args))
-    await PrefixServer(host=args.host, port=args.port, loaded_policy=loaded_component).serve()
+    await PrefixServer(
+        host=args.host,
+        port=args.port,
+        loaded_component=loaded_component,
+        stream_queue_size=args.stream_queue_size,
+        prefer_layerwise=args.prefer_layerwise,
+        allow_fallback=args.allow_fallback,
+        queue_wait_warn_ms=args.queue_wait_warn_ms,
+        request_timeout_s=args.request_timeout_s,
+    ).serve()
 
 
 def main() -> None:

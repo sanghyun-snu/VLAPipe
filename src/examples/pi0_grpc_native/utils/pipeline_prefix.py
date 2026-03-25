@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import time
+from typing import Any
+
+from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
+
+from .pipeline_logging import log_prefix_backpressure
+from .pipeline_logging import log_prefix_emit
+from .pipeline_logging import log_prefix_end
+from .pipeline_logging import log_prefix_start
+from .pipeline_models import PrefixPipelineConfig
+from .pipeline_models import PrefixStreamState
+from .runtime_inference import iter_prefix_cache_payloads_from_policy
+from .stream_protocol import tensor_to_proto
+
+
+class PrefixStreamSession:
+    def __init__(
+        self,
+        loaded_component: Any,
+        config: PrefixPipelineConfig,
+        request_id: str,
+        raw_policy_input: dict[str, Any],
+        context,
+    ) -> None:
+        self._loaded_component = loaded_component
+        self._config = config
+        self._request_id = request_id
+        self._raw_policy_input = raw_policy_input
+        self._context = context
+        self._start_t = time.perf_counter()
+        self._state = PrefixStreamState()
+        self._payload_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=self._config.stream_queue_size)
+        self._sentinel = object()
+        self._producer_task: asyncio.Task[None] | None = None
+
+    async def run(self):
+        if self._loaded_component is None:
+            raise RuntimeError("Prefix split component is not loaded. Start server with component checkpoint args.")
+        log_prefix_start(self._request_id, self._config)
+        self._producer_task = asyncio.create_task(
+            self._produce_payloads(),
+            name=f"prefix-producer-{self._request_id}",
+        )
+        try:
+            async for chunk in self._consume_chunks():
+                yield chunk
+            if self._state.producer_error is not None:
+                err = self._state.producer_error
+                raise RuntimeError(f"Prefix producer failed request_id={self._request_id}: {err}") from err
+            total_s = time.perf_counter() - self._start_t
+            log_prefix_end(self._request_id, self._state, total_s)
+        finally:
+            if self._producer_task is not None and not self._producer_task.done():
+                self._producer_task.cancel()
+            if self._producer_task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._producer_task
+
+    def _check_request_timeout(self) -> None:
+        if self._config.request_timeout_s <= 0:
+            return
+        elapsed_s = time.perf_counter() - self._start_t
+        if elapsed_s > self._config.request_timeout_s:
+            raise TimeoutError(
+                f"Prefix stream timeout request_id={self._request_id} "
+                f"elapsed={elapsed_s:.3f}s timeout={self._config.request_timeout_s:.3f}s"
+            )
+
+    async def _produce_payloads(self) -> None:
+        try:
+            for payload in iter_prefix_cache_payloads_from_policy(
+                self._loaded_component,
+                self._raw_policy_input,
+                request_id=self._request_id,
+                prefer_layerwise=self._config.prefer_layerwise,
+                allow_fallback=self._config.allow_fallback,
+            ):
+                self._check_request_timeout()
+                put_start_t = time.perf_counter()
+                await self._payload_queue.put(payload)
+                wait_s = time.perf_counter() - put_start_t
+                self._state.queue_wait_s += wait_s
+                self._state.produced_layers += 1
+                if wait_s * 1000.0 >= self._config.queue_wait_warn_ms:
+                    log_prefix_backpressure(self._request_id, payload.layer_idx, wait_s * 1000.0)
+        except Exception as exc:  # noqa: BLE001
+            self._state.producer_error = exc
+        finally:
+            await self._payload_queue.put(self._sentinel)
+
+    async def _consume_chunks(self):
+        while True:
+            self._check_request_timeout()
+            context_cancelled = getattr(self._context, "cancelled", None)
+            if callable(context_cancelled) and context_cancelled():
+                raise asyncio.CancelledError(f"Prefix stream cancelled by client request_id={self._request_id}")
+            queued = await self._payload_queue.get()
+            if queued is self._sentinel:
+                break
+            payload = queued
+            emit_s = time.perf_counter() - self._start_t
+            if self._state.first_emit_s is None:
+                self._state.first_emit_s = emit_s
+            self._state.last_emit_s = emit_s
+            self._state.emitted_layers += 1
+            log_prefix_emit(payload.request_id, payload.layer_idx)
+            yield pb2.KVCacheChunk(
+                request_id=payload.request_id,
+                layer_idx=payload.layer_idx,
+                key=tensor_to_proto(payload.key),
+                value=tensor_to_proto(payload.value),
+                prefix_pad_mask=tensor_to_proto(payload.prefix_pad_mask)
+                if payload.prefix_pad_mask is not None
+                else pb2.NdArray(),
+                has_prefix_pad_mask=(payload.prefix_pad_mask is not None),
+            )
+            await asyncio.sleep(0)

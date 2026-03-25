@@ -9,49 +9,85 @@ from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
 
 from .utils.policy_adapter import adapt_eval_request_to_policy_input
+from .utils import PrefixPipeline
+from .utils import PrefixPipelineConfig
 from .utils.policy_runtime_loader import RuntimePolicyArgs
-from .utils.runtime_inference import iter_prefix_cache_payloads_from_policy
 from .utils.split_policy_components import load_prefix_component
-from .utils.stream_protocol import tensor_to_proto
 
 DEFAULT_PREFIX_HOST = "127.0.0.1"
 DEFAULT_PREFIX_PORT = 50062
+DEFAULT_STREAM_QUEUE_SIZE = 2
+DEFAULT_QUEUE_WAIT_WARN_MS = 10.0
+DEFAULT_PREFIX_REQUEST_TIMEOUT_S = 0.0
 
 
 class PrefixService(pb2_grpc.PrefixServiceServicer):
-    def __init__(self, loaded_component=None) -> None:
-        self._loaded_component = loaded_component
+    def __init__(
+        self,
+        loaded_component=None,
+        *,
+        stream_queue_size: int = DEFAULT_STREAM_QUEUE_SIZE,
+        prefer_layerwise: bool = True,
+        allow_fallback: bool = True,
+        queue_wait_warn_ms: float = DEFAULT_QUEUE_WAIT_WARN_MS,
+        request_timeout_s: float = DEFAULT_PREFIX_REQUEST_TIMEOUT_S,
+    ) -> None:
+        if stream_queue_size <= 0:
+            raise ValueError(f"stream_queue_size must be > 0, got {stream_queue_size}")
+        if queue_wait_warn_ms < 0:
+            raise ValueError(f"queue_wait_warn_ms must be >= 0, got {queue_wait_warn_ms}")
+        if request_timeout_s < 0:
+            raise ValueError(f"request_timeout_s must be >= 0, got {request_timeout_s}")
+        self._pipeline = PrefixPipeline(
+            loaded_component=loaded_component,
+            config=PrefixPipelineConfig(
+                stream_queue_size=stream_queue_size,
+                prefer_layerwise=prefer_layerwise,
+                allow_fallback=allow_fallback,
+                queue_wait_warn_ms=queue_wait_warn_ms,
+                request_timeout_s=request_timeout_s,
+            ),
+        )
 
-    async def StreamPrefixKV(self, request: pb2.PrefixRequest, _context):
+    async def StreamPrefixKV(self, request: pb2.PrefixRequest, context):
         eval_request = request.eval_request
         if not eval_request.request_id:
             raise ValueError("PrefixRequest.eval_request is required")
-        if self._loaded_component is None:
-            raise RuntimeError("Prefix split component is not loaded. Start server with component checkpoint args.")
         adapted = adapt_eval_request_to_policy_input(eval_request)
-        print(f"[prefix] start request={request.request_id or eval_request.request_id}")
-        for payload in iter_prefix_cache_payloads_from_policy(
-            self._loaded_component,
-            adapted.raw_policy_input,
+        async for chunk in self._pipeline.stream_kv(
             request_id=eval_request.request_id,
+            raw_policy_input=adapted.raw_policy_input,
+            context=context,
         ):
-            yield pb2.KVCacheChunk(
-                request_id=payload.request_id,
-                layer_idx=payload.layer_idx,
-                key=tensor_to_proto(payload.key),
-                value=tensor_to_proto(payload.value),
-                prefix_pad_mask=tensor_to_proto(payload.prefix_pad_mask) if payload.prefix_pad_mask is not None else pb2.NdArray(),
-                has_prefix_pad_mask=(payload.prefix_pad_mask is not None),
-            )
-            await asyncio.sleep(0)
-        print(f"[prefix] end request={request.request_id or eval_request.request_id}")
+            yield chunk
 
 
 class PrefixServer:
-    def __init__(self, host: str, port: int, loaded_component=None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        loaded_component=None,
+        *,
+        stream_queue_size: int = DEFAULT_STREAM_QUEUE_SIZE,
+        prefer_layerwise: bool = True,
+        allow_fallback: bool = True,
+        queue_wait_warn_ms: float = DEFAULT_QUEUE_WAIT_WARN_MS,
+        request_timeout_s: float = DEFAULT_PREFIX_REQUEST_TIMEOUT_S,
+    ) -> None:
         self._address = f"{host}:{port}"
         self._server = grpc.aio.server()
-        pb2_grpc.add_PrefixServiceServicer_to_server(PrefixService(loaded_component=loaded_component), self._server)
+        pb2_grpc.add_PrefixServiceServicer_to_server(
+            PrefixService(
+                loaded_component=loaded_component,
+                stream_queue_size=stream_queue_size,
+                prefer_layerwise=prefer_layerwise,
+                allow_fallback=allow_fallback,
+                queue_wait_warn_ms=queue_wait_warn_ms,
+                request_timeout_s=request_timeout_s,
+            ),
+            self._server,
+        )
         self._server.add_insecure_port(self._address)
 
     async def serve(self) -> None:
@@ -81,6 +117,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-convert-checkpoint", action="store_true")
     parser.add_argument("--converted-checkpoint-dir", default="")
     parser.add_argument("--convert-precision", choices=["float32", "bfloat16", "float16"], default="bfloat16")
+    parser.add_argument("--stream-queue-size", type=int, default=DEFAULT_STREAM_QUEUE_SIZE)
+    parser.add_argument("--queue-wait-warn-ms", type=float, default=DEFAULT_QUEUE_WAIT_WARN_MS)
+    parser.add_argument("--request-timeout-s", type=float, default=DEFAULT_PREFIX_REQUEST_TIMEOUT_S)
+    parser.add_argument("--prefer-layerwise", dest="prefer_layerwise", action="store_true")
+    parser.add_argument("--disable-layerwise", dest="prefer_layerwise", action="store_false")
+    parser.add_argument("--allow-fallback", dest="allow_fallback", action="store_true")
+    parser.add_argument("--disable-fallback", dest="allow_fallback", action="store_false")
+    parser.set_defaults(prefer_layerwise=True, allow_fallback=True)
     return parser
 
 
@@ -101,7 +145,16 @@ def _runtime_policy_args(args: argparse.Namespace) -> RuntimePolicyArgs:
 
 async def main_async(args: argparse.Namespace) -> None:
     loaded_component = load_prefix_component(_runtime_policy_args(args))
-    await PrefixServer(host=args.host, port=args.port, loaded_component=loaded_component).serve()
+    await PrefixServer(
+        host=args.host,
+        port=args.port,
+        loaded_component=loaded_component,
+        stream_queue_size=args.stream_queue_size,
+        prefer_layerwise=args.prefer_layerwise,
+        allow_fallback=args.allow_fallback,
+        queue_wait_warn_ms=args.queue_wait_warn_ms,
+        request_timeout_s=args.request_timeout_s,
+    ).serve()
 
 
 def main() -> None:

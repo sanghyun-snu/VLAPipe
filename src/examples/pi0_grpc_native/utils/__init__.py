@@ -10,10 +10,15 @@ from .model_helpers import PipelineConfig
 from .model_loader import PolicyLoadConfig
 from .model_loader import load_openpi_policy
 from .policy_adapter import adapt_eval_request_to_policy_input
+from .pipeline import PrefixPipeline
+from .pipeline import PrefixPipelineConfig
+from .pipeline import SuffixPipeline
+from .pipeline import SuffixPipelineConfig
 from .policy_runtime_loader import RuntimePolicyArgs
 from .policy_runtime_loader import load_runtime_policy
 from .policy_runtime_loader import resolve_runtime_policy
 from .runtime_inference import compute_prefix_cache_from_policy
+from .runtime_inference import iter_prefix_cache_payloads_from_policy
 from .runtime_inference import run_suffix_denoise_with_cache
 from .split_policy_components import PrefixComponent
 from .split_policy_components import SuffixComponent
@@ -31,8 +36,13 @@ __all__ = [
     "ServerAddress",
     "SuffixClient",
     "adapt_eval_request_to_policy_input",
+    "PrefixPipeline",
+    "PrefixPipelineConfig",
+    "SuffixPipeline",
+    "SuffixPipelineConfig",
     "convert_jax_checkpoint_to_pytorch",
     "compute_prefix_cache_from_policy",
+    "iter_prefix_cache_payloads_from_policy",
     "default_converted_checkpoint_dir",
     "download_runtime_checkpoint",
     "load_openpi_policy",
