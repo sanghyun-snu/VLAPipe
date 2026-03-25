@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+from pathlib import Path
+import socket
 
 from examples.pi0_grpc_native.prefix import PrefixServer
 from examples.pi0_grpc_native.utils import PrefixServiceOptions
@@ -10,6 +13,7 @@ from examples.pi0_grpc_native.utils import RuntimePolicyArgs
 from examples.pi0_grpc_native.utils import load_prefix_component
 
 DEFAULT_PREFIX_SERVICE_OPTIONS = PrefixServiceOptions()
+DEFAULT_PREFIX_SIDECAR_BIN = Path(__file__).resolve().parents[1] / "build" / "pi0_sidecar" / "prefix_sidecar"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -44,9 +48,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--gpu-ipc-prefix-sidecar-address",
         default=DEFAULT_PREFIX_SERVICE_OPTIONS.gpu_ipc_prefix_sidecar_address,
     )
+    parser.add_argument("--with-sidecar", dest="with_sidecar", action="store_true")
+    parser.add_argument("--without-sidecar", dest="with_sidecar", action="store_false")
+    parser.add_argument("--sidecar-bin", default=str(DEFAULT_PREFIX_SIDECAR_BIN))
+    parser.add_argument("--sidecar-address", default=DEFAULT_PREFIX_SERVICE_OPTIONS.gpu_ipc_prefix_sidecar_address)
+    parser.add_argument("--sidecar-ready-timeout-s", type=float, default=10.0)
     parser.set_defaults(
         prefer_layerwise=DEFAULT_PREFIX_SERVICE_OPTIONS.prefer_layerwise,
         allow_fallback=DEFAULT_PREFIX_SERVICE_OPTIONS.allow_fallback,
+        with_sidecar=None,
     )
     return parser
 
@@ -76,18 +86,96 @@ def _service_options_from_args(args: argparse.Namespace) -> PrefixServiceOptions
         enable_profiling=args.enable_profiling,
         profile_log_path=args.profile_log_path,
         kv_transfer_mode=args.kv_transfer_mode,
-        gpu_ipc_prefix_sidecar_address=args.gpu_ipc_prefix_sidecar_address,
+        gpu_ipc_prefix_sidecar_address=args.sidecar_address or args.gpu_ipc_prefix_sidecar_address,
     )
 
 
+def _parse_host_port(address: str) -> tuple[str, int]:
+    try:
+        host, port_text = address.rsplit(":", 1)
+        return host, int(port_text)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"invalid sidecar address={address!r}; expected host:port") from exc
+
+
+async def _wait_for_port_ready(address: str, timeout_s: float) -> None:
+    host, port = _parse_host_port(address)
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    last_error: Exception | None = None
+    while asyncio.get_event_loop().time() < deadline:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.2)
+        try:
+            sock.connect((host, port))
+            sock.close()
+            return
+        except OSError as exc:
+            last_error = exc
+            await asyncio.sleep(0.1)
+        finally:
+            sock.close()
+    raise TimeoutError(f"sidecar not ready at {address} within {timeout_s:.1f}s: {last_error}")
+
+
+async def _start_sidecar_process(sidecar_bin: str, sidecar_address: str, ready_timeout_s: float) -> asyncio.subprocess.Process:
+    bin_path = Path(sidecar_bin).expanduser().resolve()
+    if not bin_path.exists():
+        raise FileNotFoundError(
+            f"prefix sidecar binary not found: {bin_path}. "
+            "Build with: cmake -S native/pi0_sidecar -B build/pi0_sidecar && cmake --build build/pi0_sidecar -j"
+        )
+    process = await asyncio.create_subprocess_exec(str(bin_path), sidecar_address)
+    try:
+        await _wait_for_port_ready(sidecar_address, ready_timeout_s)
+    except Exception:
+        if process.returncode is None:
+            process.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+        raise
+    print(f"[prefix-runner] sidecar started pid={process.pid} address={sidecar_address}")
+    return process
+
+
+async def _stop_sidecar_process(process: asyncio.subprocess.Process | None) -> None:
+    if process is None or process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=3.0)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+
+
+def _should_launch_sidecar(args: argparse.Namespace) -> bool:
+    if args.with_sidecar is not None:
+        return bool(args.with_sidecar)
+    return args.kv_transfer_mode == "gpu_ipc"
+
+
 async def main_async(args: argparse.Namespace) -> None:
+    sidecar_process: asyncio.subprocess.Process | None = None
+    if _should_launch_sidecar(args):
+        sidecar_process = await _start_sidecar_process(
+            args.sidecar_bin,
+            args.sidecar_address,
+            args.sidecar_ready_timeout_s,
+        )
+    elif args.kv_transfer_mode == "gpu_ipc":
+        await _wait_for_port_ready(args.sidecar_address, args.sidecar_ready_timeout_s)
+        print(f"[prefix-runner] using existing sidecar address={args.sidecar_address}")
+
     loaded_component = load_prefix_component(_runtime_policy_args(args))
-    await PrefixServer(
-        host=args.host,
-        port=args.port,
-        loaded_component=loaded_component,
-        options=_service_options_from_args(args),
-    ).serve()
+    try:
+        await PrefixServer(
+            host=args.host,
+            port=args.port,
+            loaded_component=loaded_component,
+            options=_service_options_from_args(args),
+        ).serve()
+    finally:
+        await _stop_sidecar_process(sidecar_process)
 
 
 def main() -> None:
