@@ -8,7 +8,6 @@ from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
 import openpi.models.gemma as _gemma
-from openpi.models_pytorch.gemma_pipeline import run_gemma_suffix_layerwise
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 
@@ -451,15 +450,31 @@ class PI0Pytorch(nn.Module):
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
         self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
 
-        suffix_out = run_gemma_suffix_layerwise(
-            gemma_model=self.paligemma_with_expert.gemma_expert.model,
-            suffix_embs=suffix_embs,
-            full_att_2d_masks_4d=full_att_2d_masks_4d,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            adarms_cond=adarms_cond,
-            on_layer=on_layer,
-        )
+        layer_hooks = []
+        if on_layer is not None:
+            layer_modules = self.paligemma_with_expert.gemma_expert.model.layers
+            module_to_idx = {id(layer_module): idx for idx, layer_module in enumerate(layer_modules)}
+
+            def _post_layer_hook(module, _inputs, _output) -> None:
+                layer_idx = module_to_idx.get(id(module))
+                if layer_idx is not None:
+                    on_layer(layer_idx)
+
+            for layer_module in layer_modules:
+                layer_hooks.append(layer_module.register_forward_hook(_post_layer_hook))
+        try:
+            outputs_embeds, _ = self.paligemma_with_expert.forward(
+                attention_mask=full_att_2d_masks_4d,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, suffix_embs],
+                use_cache=False,
+                adarms_cond=[None, adarms_cond],
+            )
+            suffix_out = outputs_embeds[1]
+        finally:
+            for hook in layer_hooks:
+                hook.remove()
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)

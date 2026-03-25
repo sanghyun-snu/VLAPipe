@@ -45,7 +45,10 @@ class PrefixStreamSession:
         self._kv_transfer_mode = validate_kv_transfer_mode(self._config.kv_transfer_mode)
         self._gpu_ipc_publisher: PrefixGpuIpcPublisher | None = None
         if self._kv_transfer_mode == "gpu_ipc":
-            self._gpu_ipc_publisher = PrefixGpuIpcPublisher(self._config.gpu_ipc_prefix_sidecar_address)
+            self._gpu_ipc_publisher = PrefixGpuIpcPublisher(
+                self._config.gpu_ipc_prefix_sidecar_address,
+                publish_to_sidecar=self._config.gpu_ipc_publish_sidecar,
+            )
 
     async def run(self):
         if self._loaded_component is None:
@@ -112,6 +115,7 @@ class PrefixStreamSession:
                 except StopIteration:
                     break
                 produce_s = self._profiler.now() - produce_start_t
+                produce_elapsed_s = self._profiler.now() - self._start_t
                 self._check_request_timeout()
                 put_start_t = self._profiler.now()
                 await self._payload_queue.put(payload)
@@ -122,8 +126,9 @@ class PrefixStreamSession:
                     request_id=self._request_id,
                     pipeline="prefix",
                     event="produced_layer",
-                    value_s=produce_s,
+                    value_s=produce_elapsed_s,
                     layer_idx=payload.layer_idx,
+                    details=f"compute_s={produce_s:.9f}",
                 )
                 if wait_s * 1000.0 >= self._config.queue_wait_warn_ms:
                     log_prefix_backpressure(self._request_id, payload.layer_idx, wait_s * 1000.0)
@@ -178,20 +183,24 @@ class PrefixStreamSession:
             if self._kv_transfer_mode == "gpu_ipc":
                 if self._gpu_ipc_publisher is None:
                     raise RuntimeError("gpu_ipc publisher is not initialized")
-                key_handle = self._gpu_ipc_publisher.publish_tensor(
-                    payload.request_id, payload.layer_idx, "key", payload.key
+                emit_work_start_t = self._profiler.now()
+                tensors_to_publish = {
+                    "key": payload.key,
+                    "value": payload.value,
+                }
+                if payload.prefix_pad_mask is not None:
+                    tensors_to_publish["prefix_pad_mask"] = payload.prefix_pad_mask
+                handles = self._gpu_ipc_publisher.publish_layer_tensors(
+                    payload.request_id,
+                    payload.layer_idx,
+                    tensors_to_publish,
                 )
-                value_handle = self._gpu_ipc_publisher.publish_tensor(
-                    payload.request_id, payload.layer_idx, "value", payload.value
-                )
-                prefix_pad_mask_handle = (
-                    self._gpu_ipc_publisher.publish_tensor(
-                        payload.request_id,
-                        payload.layer_idx,
-                        "prefix_pad_mask",
-                        payload.prefix_pad_mask,
-                    )
-                    if payload.prefix_pad_mask is not None
+                key_handle = handles["key"]
+                value_handle = handles["value"]
+                prefix_pad_mask_handle = handles.get("prefix_pad_mask")
+                proto_prefix_mask_handle = (
+                    prefix_pad_mask_handle.to_proto()
+                    if prefix_pad_mask_handle is not None
                     else pb2.GpuIpcHandle()
                 )
                 yield pb2.KVCacheChunk(
@@ -201,13 +210,19 @@ class PrefixStreamSession:
                     transfer_mode=pb2.KV_TRANSFER_MODE_GPU_IPC,
                     key_handle=key_handle.to_proto(),
                     value_handle=value_handle.to_proto(),
-                    prefix_pad_mask_handle=(
-                        prefix_pad_mask_handle.to_proto()
-                        if payload.prefix_pad_mask is not None
-                        else pb2.GpuIpcHandle()
-                    ),
+                    prefix_pad_mask_handle=proto_prefix_mask_handle,
+                )
+                emit_work_s = self._profiler.now() - emit_work_start_t
+                self._profiler.event(
+                    request_id=self._request_id,
+                    pipeline="prefix",
+                    event="emit_overhead_layer",
+                    value_s=emit_work_s,
+                    layer_idx=payload.layer_idx,
+                    details="mode=gpu_ipc",
                 )
             else:
+                emit_work_start_t = self._profiler.now()
                 yield pb2.KVCacheChunk(
                     request_id=payload.request_id,
                     layer_idx=payload.layer_idx,
@@ -219,4 +234,12 @@ class PrefixStreamSession:
                     has_prefix_pad_mask=(payload.prefix_pad_mask is not None),
                     transfer_mode=pb2.KV_TRANSFER_MODE_PROTO_BYTES,
                 )
-            await asyncio.sleep(0)
+                emit_work_s = self._profiler.now() - emit_work_start_t
+                self._profiler.event(
+                    request_id=self._request_id,
+                    pipeline="prefix",
+                    event="emit_overhead_layer",
+                    value_s=emit_work_s,
+                    layer_idx=payload.layer_idx,
+                    details="mode=proto_bytes",
+                )

@@ -55,6 +55,7 @@ class V2AsyncCacheStrategy:
             raise ValueError("EvalRequest.request_id is required")
 
         request_id = request.request_id
+        request_start_t = self._profiler.now()
         model_device = self._loaded_component.device
         expected_num_layers = len(self._loaded_component.model.paligemma_with_expert.gemma_expert.model.layers)
         prefix_request = pb2.PrefixRequest(request_id=request_id, eval_request=request)
@@ -224,16 +225,18 @@ class V2AsyncCacheStrategy:
                 )
 
             def _on_denoise_layer(step_idx: int, layer_idx: int, layer_s: float, is_warmup: bool) -> None:
+                layer_elapsed_s = self._profiler.now() - request_start_t
                 self._profiler.event(
                     request_id=request_id,
                     pipeline="suffix",
                     event="denoise_layer_v2",
-                    value_s=layer_s,
+                    value_s=layer_elapsed_s,
                     layer_idx=layer_idx,
                     details=(
                         f"iteration={step_idx + 1},"
                         f"warmup={int(is_warmup)},"
-                        f"cache_layers={cache_layers}"
+                        f"cache_layers={cache_layers},"
+                        f"layer_s={layer_s:.9f}"
                     ),
                 )
 

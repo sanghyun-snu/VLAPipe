@@ -184,16 +184,18 @@ class SuffixEvalSession:
                 )
 
             def _on_denoise_layer(step_idx: int, layer_idx: int, layer_s: float, is_warmup: bool) -> None:
+                layer_elapsed_s = self._profiler.now() - self._start_t
                 self._profiler.event(
                     request_id=request_id,
                     pipeline="suffix",
                     event="denoise_layer",
-                    value_s=layer_s,
+                    value_s=layer_elapsed_s,
                     layer_idx=layer_idx,
                     details=(
                         f"iteration={step_idx + 1},"
                         f"warmup={int(is_warmup)},"
-                        f"cache_layers={cache_layers}"
+                        f"cache_layers={cache_layers},"
+                        f"layer_s={layer_s:.9f}"
                     ),
                 )
 

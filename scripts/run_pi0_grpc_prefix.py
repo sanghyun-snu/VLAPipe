@@ -49,6 +49,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--gpu-ipc-prefix-sidecar-address",
         default=DEFAULT_PREFIX_SERVICE_OPTIONS.gpu_ipc_prefix_sidecar_address,
     )
+    parser.add_argument("--gpu-ipc-publish-sidecar", dest="gpu_ipc_publish_sidecar", action="store_true")
+    parser.add_argument("--gpu-ipc-publish-direct-only", dest="gpu_ipc_publish_sidecar", action="store_false")
     parser.add_argument("--with-sidecar", dest="with_sidecar", action="store_true")
     parser.add_argument("--without-sidecar", dest="with_sidecar", action="store_false")
     parser.add_argument("--sidecar-bin", default=str(DEFAULT_PREFIX_SIDECAR_BIN))
@@ -66,6 +68,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prefer_layerwise=DEFAULT_PREFIX_SERVICE_OPTIONS.prefer_layerwise,
         allow_fallback=DEFAULT_PREFIX_SERVICE_OPTIONS.allow_fallback,
         with_sidecar=None,
+        gpu_ipc_publish_sidecar=DEFAULT_PREFIX_SERVICE_OPTIONS.gpu_ipc_publish_sidecar,
         startup_warmup=True,
     )
     return parser
@@ -97,6 +100,7 @@ def _service_options_from_args(args: argparse.Namespace) -> PrefixServiceOptions
         profile_log_path=args.profile_log_path,
         kv_transfer_mode=args.kv_transfer_mode,
         gpu_ipc_prefix_sidecar_address=args.sidecar_address or args.gpu_ipc_prefix_sidecar_address,
+        gpu_ipc_publish_sidecar=args.gpu_ipc_publish_sidecar,
     )
 
 

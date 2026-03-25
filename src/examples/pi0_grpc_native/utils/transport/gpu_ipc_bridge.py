@@ -198,16 +198,29 @@ def _require_sidecar_reachable(sidecar_address: str) -> None:
 class PrefixGpuIpcPublisher:
     """Publish CUDA IPC handles from prefix tensors."""
 
-    def __init__(self, sidecar_address: str) -> None:
+    def __init__(self, sidecar_address: str, *, publish_to_sidecar: bool = True) -> None:
         self._sidecar_address = sidecar_address
-        _require_sidecar_reachable(self._sidecar_address)
-        self._sidecar_channel = grpc.insecure_channel(self._sidecar_address)
-        self._sidecar_stub = sidecar_pb2_grpc.GpuIpcSidecarStub(self._sidecar_channel)
+        self._publish_to_sidecar_enabled = publish_to_sidecar
+        self._sidecar_channel = None
+        self._sidecar_stub = None
+        if self._publish_to_sidecar_enabled:
+            _require_sidecar_reachable(self._sidecar_address)
+            self._sidecar_channel = grpc.insecure_channel(self._sidecar_address)
+            self._sidecar_stub = sidecar_pb2_grpc.GpuIpcSidecarStub(self._sidecar_channel)
         self._live_tensors: OrderedDict[str, tuple[torch.Tensor, float]] = OrderedDict()
         self._max_live_handles = 4096
         self._ttl_s = 30.0
 
-    def publish_tensor(self, request_id: str, layer_idx: int, name: str, tensor: torch.Tensor) -> GpuIpcTensorHandle:
+    def publish_tensor(
+        self,
+        request_id: str,
+        layer_idx: int,
+        name: str,
+        tensor: torch.Tensor,
+        *,
+        synchronize: bool = True,
+        publish_to_sidecar: bool | None = None,
+    ) -> GpuIpcTensorHandle:
         if not tensor.is_cuda:
             raise RuntimeError(
                 f"gpu_ipc requires CUDA tensor request_id={request_id} layer_idx={layer_idx} name={name} "
@@ -222,7 +235,8 @@ class PrefixGpuIpcPublisher:
 
         device_index = contiguous.device.index if contiguous.device.index is not None else 0
         # Correctness-first barrier: ensure producer-side writes are visible before exporting handle.
-        torch.cuda.synchronize(device_index)
+        if synchronize:
+            torch.cuda.synchronize(device_index)
         handle_bytes = _cuda_runtime().get_mem_handle_bytes(contiguous.data_ptr())
         handle_id = _encode_handle_id(handle_bytes)
         self._live_tensors[handle_id] = (contiguous, time.monotonic())
@@ -234,8 +248,41 @@ class PrefixGpuIpcPublisher:
             device_index=int(device_index),
             nbytes=int(contiguous.numel() * contiguous.element_size()),
         )
-        self._publish_to_sidecar(request_id, layer_idx, name, result)
+        should_publish = self._publish_to_sidecar_enabled if publish_to_sidecar is None else bool(publish_to_sidecar)
+        if should_publish:
+            self._publish_to_sidecar(request_id, layer_idx, name, result)
         return result
+
+    def publish_layer_tensors(
+        self,
+        request_id: str,
+        layer_idx: int,
+        tensors: dict[str, torch.Tensor],
+    ) -> dict[str, GpuIpcTensorHandle]:
+        if not tensors:
+            return {}
+        first_tensor = next(iter(tensors.values()))
+        if not first_tensor.is_cuda:
+            raise RuntimeError(
+                f"gpu_ipc requires CUDA tensor request_id={request_id} layer_idx={layer_idx} "
+                f"got device={first_tensor.device}"
+            )
+        device_index = first_tensor.device.index if first_tensor.device.index is not None else 0
+        torch.cuda.synchronize(device_index)
+        handles = {
+            name: self.publish_tensor(
+                request_id,
+                layer_idx,
+                name,
+                tensor,
+                synchronize=False,
+                publish_to_sidecar=False,
+            )
+            for name, tensor in tensors.items()
+        }
+        if self._publish_to_sidecar_enabled:
+            self._publish_many_to_sidecar(request_id, layer_idx, handles)
+        return handles
 
     def _prune_live_tensors(self) -> None:
         now = time.monotonic()
@@ -248,6 +295,8 @@ class PrefixGpuIpcPublisher:
             break
 
     def _publish_to_sidecar(self, request_id: str, layer_idx: int, name: str, handle: GpuIpcTensorHandle) -> None:
+        if self._sidecar_stub is None:
+            raise RuntimeError("sidecar stub is not initialized for publish")
         request = sidecar_pb2.PublishHandleRequest(
             request_id=request_id,
             layer_idx=int(layer_idx),
@@ -266,6 +315,37 @@ class PrefixGpuIpcPublisher:
                 f"sidecar PublishHandle failed request_id={request_id} layer_idx={layer_idx} "
                 f"name={name}: {response.message}"
             )
+
+    def _publish_many_to_sidecar(
+        self,
+        request_id: str,
+        layer_idx: int,
+        handles: dict[str, GpuIpcTensorHandle],
+    ) -> None:
+        if self._sidecar_stub is None:
+            raise RuntimeError("sidecar stub is not initialized for batched publish")
+        futures: list[tuple[str, grpc.Future]] = []
+        for name, handle in handles.items():
+            request = sidecar_pb2.PublishHandleRequest(
+                request_id=request_id,
+                layer_idx=int(layer_idx),
+                tensor_name=name,
+                handle=sidecar_pb2.GpuIpcHandle(
+                    handle_id=handle.handle_id,
+                    shape=list(handle.shape),
+                    dtype=handle.dtype,
+                    device_index=handle.device_index,
+                    nbytes=handle.nbytes,
+                ),
+            )
+            futures.append((name, self._sidecar_stub.PublishHandle.future(request, timeout=0.5)))
+        for name, future in futures:
+            response = future.result()
+            if not response.ok:
+                raise RuntimeError(
+                    f"sidecar PublishHandle failed request_id={request_id} layer_idx={layer_idx} "
+                    f"name={name}: {response.message}"
+                )
 
 
 class SuffixGpuIpcResolver:
