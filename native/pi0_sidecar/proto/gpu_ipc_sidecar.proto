@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package openpi.native.gpuipc;
+
+message GpuIpcHandle {
+  string handle_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  int32 device_index = 4;
+  uint64 nbytes = 5;
+}
+
+message PublishHandleRequest {
+  string request_id = 1;
+  int32 layer_idx = 2;
+  string tensor_name = 3;
+  GpuIpcHandle handle = 4;
+}
+
+message PublishHandleResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message ResolveHandleRequest {
+  string request_id = 1;
+  int32 layer_idx = 2;
+  string tensor_name = 3;
+}
+
+message ResolveHandleResponse {
+  bool found = 1;
+  GpuIpcHandle handle = 2;
+  string message = 3;
+}
+
+message HealthzRequest {}
+
+message HealthzResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+service GpuIpcSidecar {
+  rpc PublishHandle(PublishHandleRequest) returns (PublishHandleResponse);
+  rpc ResolveHandle(ResolveHandleRequest) returns (ResolveHandleResponse);
+  rpc Healthz(HealthzRequest) returns (HealthzResponse);
+}
+

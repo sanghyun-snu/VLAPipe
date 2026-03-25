@@ -12,6 +12,8 @@ class PrefixPipelineConfig:
     request_timeout_s: float = 0.0
     enable_profiling: bool = False
     profile_log_path: str = ""
+    kv_transfer_mode: str = "gpu_ipc"
+    gpu_ipc_prefix_sidecar_address: str = "127.0.0.1:55062"
 
 
 @dataclass
@@ -37,6 +39,8 @@ class SuffixPipelineConfig:
     drop_late_updates: bool = False
     enable_profiling: bool = False
     profile_log_path: str = ""
+    kv_transfer_mode: str = "gpu_ipc"
+    gpu_ipc_suffix_sidecar_address: str = "127.0.0.1:55061"
 
 
 @dataclass

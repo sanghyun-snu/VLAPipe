@@ -6,6 +6,7 @@ from typing import Any
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 
 from ..transport.grpc_cache import PrefixClient
+from ..transport.kv_transport import validate_kv_transfer_mode
 from .execution import make_suffix_execution_strategy
 from .models import PrefixPipelineConfig
 from .models import SuffixPipelineConfig
@@ -22,6 +23,7 @@ class PrefixPipeline:
             raise ValueError(f"queue_wait_warn_ms must be >= 0, got {config.queue_wait_warn_ms}")
         if config.request_timeout_s < 0:
             raise ValueError(f"request_timeout_s must be >= 0, got {config.request_timeout_s}")
+        validate_kv_transfer_mode(config.kv_transfer_mode)
         self._loaded_component = loaded_component
         self._config = config
         self._profiler = PipelineProfiler(
@@ -53,6 +55,7 @@ class SuffixPipeline:
             raise ValueError(f"cache_ttl_ms must be >= 0, got {config.cache_ttl_ms}")
         if config.max_staleness_layers < 0:
             raise ValueError(f"max_staleness_layers must be >= 0, got {config.max_staleness_layers}")
+        validate_kv_transfer_mode(config.kv_transfer_mode)
         self._prefix_client = prefix_client
         self._loaded_component = loaded_component
         self._config = config

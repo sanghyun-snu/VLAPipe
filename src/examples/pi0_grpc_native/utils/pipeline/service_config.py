@@ -15,6 +15,8 @@ class PrefixServiceOptions:
     request_timeout_s: float = 0.0
     enable_profiling: bool = False
     profile_log_path: str = ""
+    kv_transfer_mode: str = "gpu_ipc"
+    gpu_ipc_prefix_sidecar_address: str = "127.0.0.1:55062"
 
     def to_pipeline_config(self) -> PrefixPipelineConfig:
         return PrefixPipelineConfig(
@@ -25,6 +27,8 @@ class PrefixServiceOptions:
             request_timeout_s=self.request_timeout_s,
             enable_profiling=self.enable_profiling,
             profile_log_path=self.profile_log_path,
+            kv_transfer_mode=self.kv_transfer_mode,
+            gpu_ipc_prefix_sidecar_address=self.gpu_ipc_prefix_sidecar_address,
         )
 
 
@@ -41,6 +45,8 @@ class SuffixServiceOptions:
     drop_late_updates: bool = False
     enable_profiling: bool = False
     profile_log_path: str = ""
+    kv_transfer_mode: str = "gpu_ipc"
+    gpu_ipc_suffix_sidecar_address: str = "127.0.0.1:55061"
 
     def to_pipeline_config(self) -> SuffixPipelineConfig:
         return SuffixPipelineConfig(
@@ -55,4 +61,6 @@ class SuffixServiceOptions:
             drop_late_updates=self.drop_late_updates,
             enable_profiling=self.enable_profiling,
             profile_log_path=self.profile_log_path,
+            kv_transfer_mode=self.kv_transfer_mode,
+            gpu_ipc_suffix_sidecar_address=self.gpu_ipc_suffix_sidecar_address,
         )

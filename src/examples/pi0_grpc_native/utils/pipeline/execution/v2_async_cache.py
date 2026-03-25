@@ -12,6 +12,8 @@ from .async_kv_store import AsyncKVStore
 from ..models import SuffixPipelineConfig
 from ..profile import PipelineProfiler
 from ...runtime.inference.runtime_inference import run_suffix_denoise_with_cache
+from ...transport.gpu_ipc_bridge import SuffixGpuIpcResolver
+from ...transport.kv_transport import validate_kv_transfer_mode
 from ...transport.stream_protocol import ndarray_to_proto
 from ...transport.stream_protocol import proto_to_tensor
 
@@ -31,6 +33,10 @@ class V2AsyncCacheStrategy:
         self._loaded_component = loaded_component
         self._config = config
         self._profiler = profiler
+        self._kv_transfer_mode = validate_kv_transfer_mode(config.kv_transfer_mode)
+        self._gpu_ipc_resolver: SuffixGpuIpcResolver | None = None
+        if self._kv_transfer_mode == "gpu_ipc":
+            self._gpu_ipc_resolver = SuffixGpuIpcResolver(self._config.gpu_ipc_suffix_sidecar_address)
 
     async def run(
         self,
@@ -103,12 +109,37 @@ class V2AsyncCacheStrategy:
                             f"Out-of-order layer in stream: previous={last_seen_layer_idx} got={layer_idx}"
                         )
                     last_seen_layer_idx = layer_idx
+                    if chunk.transfer_mode == pb2.KV_TRANSFER_MODE_GPU_IPC:
+                        if self._gpu_ipc_resolver is None:
+                            raise RuntimeError("gpu_ipc resolver is not initialized")
+                        key_tensor = self._gpu_ipc_resolver.resolve_tensor(
+                            chunk.request_id,
+                            layer_idx,
+                            "key",
+                            chunk.key_handle,
+                        )
+                        value_tensor = self._gpu_ipc_resolver.resolve_tensor(
+                            chunk.request_id,
+                            layer_idx,
+                            "value",
+                            chunk.value_handle,
+                        )
+                        if chunk.has_prefix_pad_mask:
+                            prefix_pad_mask = self._gpu_ipc_resolver.resolve_tensor(
+                                chunk.request_id,
+                                layer_idx,
+                                "prefix_pad_mask",
+                                chunk.prefix_pad_mask_handle,
+                            )
+                    else:
+                        key_tensor = proto_to_tensor(chunk.key, device=model_device)
+                        value_tensor = proto_to_tensor(chunk.value, device=model_device)
+                        if chunk.has_prefix_pad_mask:
+                            prefix_pad_mask = proto_to_tensor(chunk.prefix_pad_mask, device=model_device)
                     layer_map[layer_idx] = (
-                        proto_to_tensor(chunk.key, device=model_device),
-                        proto_to_tensor(chunk.value, device=model_device),
+                        key_tensor,
+                        value_tensor,
                     )
-                    if chunk.has_prefix_pad_mask:
-                        prefix_pad_mask = proto_to_tensor(chunk.prefix_pad_mask, device=model_device)
                     received_layers += 1
                     while (highest_contiguous_layer + 1) in layer_map:
                         highest_contiguous_layer += 1

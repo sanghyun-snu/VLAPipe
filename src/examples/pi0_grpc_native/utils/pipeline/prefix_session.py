@@ -14,6 +14,8 @@ from .models import PrefixPipelineConfig
 from .models import PrefixStreamState
 from .profile import PipelineProfiler
 from ..runtime.inference.runtime_inference import iter_prefix_cache_payloads_from_policy
+from ..transport.gpu_ipc_bridge import PrefixGpuIpcPublisher
+from ..transport.kv_transport import validate_kv_transfer_mode
 from ..transport.stream_protocol import tensor_to_proto
 
 
@@ -40,6 +42,10 @@ class PrefixStreamSession:
         self._payload_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=self._config.stream_queue_size)
         self._sentinel = object()
         self._producer_task: asyncio.Task[None] | None = None
+        self._kv_transfer_mode = validate_kv_transfer_mode(self._config.kv_transfer_mode)
+        self._gpu_ipc_publisher: PrefixGpuIpcPublisher | None = None
+        if self._kv_transfer_mode == "gpu_ipc":
+            self._gpu_ipc_publisher = PrefixGpuIpcPublisher(self._config.gpu_ipc_prefix_sidecar_address)
 
     async def run(self):
         if self._loaded_component is None:
@@ -159,14 +165,48 @@ class PrefixStreamSession:
                 value_s=emit_s,
                 layer_idx=payload.layer_idx,
             )
-            yield pb2.KVCacheChunk(
-                request_id=payload.request_id,
-                layer_idx=payload.layer_idx,
-                key=tensor_to_proto(payload.key),
-                value=tensor_to_proto(payload.value),
-                prefix_pad_mask=tensor_to_proto(payload.prefix_pad_mask)
-                if payload.prefix_pad_mask is not None
-                else pb2.NdArray(),
-                has_prefix_pad_mask=(payload.prefix_pad_mask is not None),
-            )
+            if self._kv_transfer_mode == "gpu_ipc":
+                if self._gpu_ipc_publisher is None:
+                    raise RuntimeError("gpu_ipc publisher is not initialized")
+                key_handle = self._gpu_ipc_publisher.publish_tensor(
+                    payload.request_id, payload.layer_idx, "key", payload.key
+                )
+                value_handle = self._gpu_ipc_publisher.publish_tensor(
+                    payload.request_id, payload.layer_idx, "value", payload.value
+                )
+                prefix_pad_mask_handle = (
+                    self._gpu_ipc_publisher.publish_tensor(
+                        payload.request_id,
+                        payload.layer_idx,
+                        "prefix_pad_mask",
+                        payload.prefix_pad_mask,
+                    )
+                    if payload.prefix_pad_mask is not None
+                    else pb2.GpuIpcHandle()
+                )
+                yield pb2.KVCacheChunk(
+                    request_id=payload.request_id,
+                    layer_idx=payload.layer_idx,
+                    has_prefix_pad_mask=(payload.prefix_pad_mask is not None),
+                    transfer_mode=pb2.KV_TRANSFER_MODE_GPU_IPC,
+                    key_handle=key_handle.to_proto(),
+                    value_handle=value_handle.to_proto(),
+                    prefix_pad_mask_handle=(
+                        prefix_pad_mask_handle.to_proto()
+                        if payload.prefix_pad_mask is not None
+                        else pb2.GpuIpcHandle()
+                    ),
+                )
+            else:
+                yield pb2.KVCacheChunk(
+                    request_id=payload.request_id,
+                    layer_idx=payload.layer_idx,
+                    key=tensor_to_proto(payload.key),
+                    value=tensor_to_proto(payload.value),
+                    prefix_pad_mask=tensor_to_proto(payload.prefix_pad_mask)
+                    if payload.prefix_pad_mask is not None
+                    else pb2.NdArray(),
+                    has_prefix_pad_mask=(payload.prefix_pad_mask is not None),
+                    transfer_mode=pb2.KV_TRANSFER_MODE_PROTO_BYTES,
+                )
             await asyncio.sleep(0)

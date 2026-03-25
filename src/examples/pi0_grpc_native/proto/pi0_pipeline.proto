@@ -52,6 +52,19 @@ message PrefixRequest {
   EvalRequest eval_request = 2;
 }
 
+enum KVTransferMode {
+  KV_TRANSFER_MODE_PROTO_BYTES = 0;
+  KV_TRANSFER_MODE_GPU_IPC = 1;
+}
+
+message GpuIpcHandle {
+  string handle_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  int32 device_index = 4;
+  uint64 nbytes = 5;
+}
+
 message KVCacheChunk {
   string request_id = 1;
   int32 layer_idx = 2;
@@ -59,6 +72,10 @@ message KVCacheChunk {
   NdArray value = 4;
   NdArray prefix_pad_mask = 5;
   bool has_prefix_pad_mask = 6;
+  KVTransferMode transfer_mode = 7;
+  GpuIpcHandle key_handle = 8;
+  GpuIpcHandle value_handle = 9;
+  GpuIpcHandle prefix_pad_mask_handle = 10;
 }
 
 message EvalResponse {

@@ -17,6 +17,8 @@ from .logging import log_suffix_start
 from .models import SuffixEvalState
 from .models import SuffixPipelineConfig
 from .profile import PipelineProfiler
+from ..transport.gpu_ipc_bridge import SuffixGpuIpcResolver
+from ..transport.kv_transport import validate_kv_transfer_mode
 from ..runtime.inference.runtime_inference import run_suffix_denoise_with_cache
 from ..transport.stream_protocol import ndarray_to_proto
 from ..transport.stream_protocol import proto_to_tensor
@@ -44,6 +46,10 @@ class SuffixEvalSession:
         self._profiler = profiler
         self._state = SuffixEvalState()
         self._start_t = self._profiler.now()
+        self._kv_transfer_mode = validate_kv_transfer_mode(self._config.kv_transfer_mode)
+        self._gpu_ipc_resolver: SuffixGpuIpcResolver | None = None
+        if self._kv_transfer_mode == "gpu_ipc":
+            self._gpu_ipc_resolver = SuffixGpuIpcResolver(self._config.gpu_ipc_suffix_sidecar_address)
 
     async def run(self) -> pb2.EvalResponse:
         if self._loaded_component is None:
@@ -68,15 +74,44 @@ class SuffixEvalSession:
             async for chunk in self._prefix_client.stream_prefix(
                 prefix_request, timeout_s=self._config.prefix_stream_timeout_s
             ):
+                if chunk.transfer_mode == pb2.KV_TRANSFER_MODE_GPU_IPC:
+                    if self._gpu_ipc_resolver is None:
+                        raise RuntimeError("gpu_ipc resolver is not initialized")
+                    key_tensor = self._gpu_ipc_resolver.resolve_tensor(
+                        chunk.request_id,
+                        int(chunk.layer_idx),
+                        "key",
+                        chunk.key_handle,
+                    )
+                    value_tensor = self._gpu_ipc_resolver.resolve_tensor(
+                        chunk.request_id,
+                        int(chunk.layer_idx),
+                        "value",
+                        chunk.value_handle,
+                    )
+                    prefix_pad_mask_tensor = (
+                        self._gpu_ipc_resolver.resolve_tensor(
+                            chunk.request_id,
+                            int(chunk.layer_idx),
+                            "prefix_pad_mask",
+                            chunk.prefix_pad_mask_handle,
+                        )
+                        if chunk.has_prefix_pad_mask
+                        else None
+                    )
+                else:
+                    key_tensor = proto_to_tensor(chunk.key, device=model_device)
+                    value_tensor = proto_to_tensor(chunk.value, device=model_device)
+                    prefix_pad_mask_tensor = (
+                        proto_to_tensor(chunk.prefix_pad_mask, device=model_device) if chunk.has_prefix_pad_mask else None
+                    )
                 scheduler.ingest(
                     LayerKVPayload(
                         request_id=chunk.request_id,
                         layer_idx=chunk.layer_idx,
-                        key=proto_to_tensor(chunk.key, device=model_device),
-                        value=proto_to_tensor(chunk.value, device=model_device),
-                        prefix_pad_mask=proto_to_tensor(chunk.prefix_pad_mask, device=model_device)
-                        if chunk.has_prefix_pad_mask
-                        else None,
+                        key=key_tensor,
+                        value=value_tensor,
+                        prefix_pad_mask=prefix_pad_mask_tensor,
                     )
                 )
                 self._state.received_layers += 1

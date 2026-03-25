@@ -35,6 +35,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-fallback", dest="allow_fallback", action="store_false")
     parser.add_argument("--enable-profiling", action="store_true")
     parser.add_argument("--profile-log-path", default=DEFAULT_PREFIX_SERVICE_OPTIONS.profile_log_path)
+    parser.add_argument(
+        "--kv-transfer-mode",
+        choices=["proto_bytes", "gpu_ipc"],
+        default=DEFAULT_PREFIX_SERVICE_OPTIONS.kv_transfer_mode,
+    )
+    parser.add_argument(
+        "--gpu-ipc-prefix-sidecar-address",
+        default=DEFAULT_PREFIX_SERVICE_OPTIONS.gpu_ipc_prefix_sidecar_address,
+    )
     parser.set_defaults(
         prefer_layerwise=DEFAULT_PREFIX_SERVICE_OPTIONS.prefer_layerwise,
         allow_fallback=DEFAULT_PREFIX_SERVICE_OPTIONS.allow_fallback,
@@ -66,6 +75,8 @@ def _service_options_from_args(args: argparse.Namespace) -> PrefixServiceOptions
         request_timeout_s=args.request_timeout_s,
         enable_profiling=args.enable_profiling,
         profile_log_path=args.profile_log_path,
+        kv_transfer_mode=args.kv_transfer_mode,
+        gpu_ipc_prefix_sidecar_address=args.gpu_ipc_prefix_sidecar_address,
     )
 
 
