@@ -12,6 +12,7 @@ from examples.pi0_grpc_native.suffix import SuffixServer
 from examples.pi0_grpc_native.utils import RuntimePolicyArgs
 from examples.pi0_grpc_native.utils import SuffixServiceOptions
 from examples.pi0_grpc_native.utils import load_suffix_component
+from examples.pi0_grpc_native.utils.runtime import run_suffix_endpoint_startup_warmup
 
 DEFAULT_SUFFIX_SERVICE_OPTIONS = SuffixServiceOptions()
 DEFAULT_SUFFIX_SIDECAR_BIN = Path(__file__).resolve().parents[1] / "build" / "pi0_sidecar" / "suffix_sidecar"
@@ -61,6 +62,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--gpu-ipc-suffix-sidecar-address",
         default=DEFAULT_SUFFIX_SERVICE_OPTIONS.gpu_ipc_suffix_sidecar_address,
     )
+    parser.add_argument(
+        "--gpu-ipc-resolve-mode",
+        choices=["direct", "sidecar_fallback", "sidecar_only"],
+        default=DEFAULT_SUFFIX_SERVICE_OPTIONS.gpu_ipc_resolve_mode,
+    )
+    parser.add_argument("--deterministic-noise", action="store_true")
     parser.add_argument("--with-sidecar", dest="with_sidecar", action="store_true")
     parser.add_argument("--without-sidecar", dest="with_sidecar", action="store_false")
     parser.add_argument("--sidecar-bin", default=str(DEFAULT_SUFFIX_SIDECAR_BIN))
@@ -71,11 +78,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Upstream sidecar address for handle resolve miss forwarding.",
     )
     parser.add_argument("--sidecar-ready-timeout-s", type=float, default=10.0)
+    parser.add_argument("--startup-warmup", dest="startup_warmup", action="store_true")
+    parser.add_argument("--disable-startup-warmup", dest="startup_warmup", action="store_false")
+    parser.add_argument("--warmup-runs", type=int, default=1)
+    parser.add_argument("--warmup-timeout-s", type=float, default=90.0)
     parser.set_defaults(
         strict_layer_ordering=DEFAULT_SUFFIX_SERVICE_OPTIONS.strict_layer_ordering,
         allow_stale_cache=DEFAULT_SUFFIX_SERVICE_OPTIONS.allow_stale_cache,
         drop_late_updates=DEFAULT_SUFFIX_SERVICE_OPTIONS.drop_late_updates,
         with_sidecar=None,
+        startup_warmup=True,
     )
     return parser
 
@@ -110,6 +122,8 @@ def _service_options_from_args(args: argparse.Namespace) -> SuffixServiceOptions
         profile_log_path=args.profile_log_path,
         kv_transfer_mode=args.kv_transfer_mode,
         gpu_ipc_suffix_sidecar_address=args.sidecar_address or args.gpu_ipc_suffix_sidecar_address,
+        gpu_ipc_resolve_mode=args.gpu_ipc_resolve_mode,
+        deterministic_noise=args.deterministic_noise,
     )
 
 
@@ -200,15 +214,37 @@ async def main_async(args: argparse.Namespace) -> None:
         print(f"[suffix-runner] using existing sidecar address={args.sidecar_address}")
 
     loaded_component = load_suffix_component(_runtime_policy_args(args))
+    server = SuffixServer(
+        host=args.host,
+        port=args.port,
+        prefix_host=args.prefix_host,
+        prefix_port=args.prefix_port,
+        loaded_component=loaded_component,
+        options=_service_options_from_args(args),
+    )
     try:
-        await SuffixServer(
-            host=args.host,
-            port=args.port,
-            prefix_host=args.prefix_host,
-            prefix_port=args.prefix_port,
-            loaded_component=loaded_component,
-            options=_service_options_from_args(args),
-        ).serve()
+        await server.start()
+        if loaded_component is not None and args.startup_warmup:
+            warmup_runs = max(1, int(args.warmup_runs))
+            warmup_address = f"{args.host}:{args.port}"
+            try:
+                warmup_s = await run_suffix_endpoint_startup_warmup(
+                    address=warmup_address,
+                    policy_name=args.policy_name,
+                    runs=warmup_runs,
+                    timeout_s=float(args.warmup_timeout_s),
+                )
+                print(
+                    f"[suffix-runner] startup warmup done policy={args.policy_name} "
+                    f"runs={warmup_runs} warmup_latency_s={warmup_s:.4f}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[suffix-runner] startup warmup skipped due to error: {exc}")
+        elif loaded_component is not None:
+            print("[suffix-runner] startup warmup disabled")
+        else:
+            print("[suffix-runner] startup warmup skipped: policy is not loaded")
+        await server.wait_for_termination()
     finally:
         await _stop_sidecar_process(sidecar_process)
 

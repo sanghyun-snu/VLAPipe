@@ -12,6 +12,7 @@ from examples.pi0_grpc_native.utils import PrefixServiceOptions
 from examples.pi0_grpc_native.utils import RuntimePolicyArgs
 from examples.pi0_grpc_native.utils import adapt_eval_request_to_policy_input
 from examples.pi0_grpc_native.utils import load_prefix_component
+from examples.pi0_grpc_native.utils.runtime import run_prefix_component_startup_warmup
 
 DEFAULT_PREFIX_HOST = "127.0.0.1"
 DEFAULT_PREFIX_PORT = 50062
@@ -114,9 +115,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--gpu-ipc-prefix-sidecar-address",
         default=DEFAULT_PREFIX_SERVICE_OPTIONS.gpu_ipc_prefix_sidecar_address,
     )
+    parser.add_argument("--startup-warmup", dest="startup_warmup", action="store_true")
+    parser.add_argument("--disable-startup-warmup", dest="startup_warmup", action="store_false")
+    parser.add_argument("--warmup-runs", type=int, default=1)
     parser.set_defaults(
         prefer_layerwise=DEFAULT_PREFIX_SERVICE_OPTIONS.prefer_layerwise,
         allow_fallback=DEFAULT_PREFIX_SERVICE_OPTIONS.allow_fallback,
+        startup_warmup=True,
     )
     return parser
 
@@ -152,6 +157,17 @@ def _service_options_from_args(args: argparse.Namespace) -> PrefixServiceOptions
 
 async def main_async(args: argparse.Namespace) -> None:
     loaded_component = load_prefix_component(_runtime_policy_args(args))
+    if loaded_component is not None and args.startup_warmup:
+        warmup_runs = max(1, int(args.warmup_runs))
+        warmup_s = run_prefix_component_startup_warmup(loaded_component, args.policy_name, runs=warmup_runs)
+        print(
+            f"[prefix] startup warmup done policy={args.policy_name} "
+            f"runs={warmup_runs} warmup_latency_s={warmup_s:.4f}"
+        )
+    elif loaded_component is not None:
+        print("[prefix] startup warmup disabled")
+    else:
+        print("[prefix] startup warmup skipped: policy is not loaded")
     await PrefixServer(
         host=args.host,
         port=args.port,

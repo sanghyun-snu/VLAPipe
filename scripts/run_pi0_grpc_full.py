@@ -21,6 +21,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-convert-checkpoint", action="store_true")
     parser.add_argument("--converted-checkpoint-dir", default="")
     parser.add_argument("--convert-precision", choices=["float32", "bfloat16", "float16"], default="bfloat16")
+    parser.add_argument("--deterministic-noise", action="store_true")
+    parser.add_argument("--startup-warmup", dest="startup_warmup", action="store_true")
+    parser.add_argument("--disable-startup-warmup", dest="startup_warmup", action="store_false")
+    parser.add_argument("--warmup-runs", type=int, default=1)
+    parser.set_defaults(startup_warmup=True)
     return parser
 
 

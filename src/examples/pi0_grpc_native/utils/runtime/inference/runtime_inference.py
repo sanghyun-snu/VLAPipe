@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -10,6 +11,8 @@ from openpi.models_pytorch.prefix_scheduler import iter_prefix_forward_payloads
 from openpi.models_pytorch.prefix_scheduler import run_prefix_forward
 from openpi.models_pytorch.suffix_scheduler import preprocess_suffix_observation
 from openpi.models_pytorch.suffix_scheduler import run_suffix_denoise
+
+from .noise_facade import build_torch_deterministic_noise  # pyright: ignore[reportMissingImports]
 
 
 def _to_tensor_batch(value: Any, *, device: str) -> torch.Tensor:
@@ -69,11 +72,24 @@ def run_suffix_denoise_with_cache(
     past_key_values: tuple,
     *,
     warmup_diffusion_steps: int = 0,
+    request_id: str = "",
+    deterministic_noise: bool = False,
+    denoise_step_callback: Callable[[int, int, float, bool], None] | None = None,
 ) -> np.ndarray:
     model = component.model
     transformed_inputs, observation = _prepare_component_inputs(component, raw_policy_input)
     state, _device = preprocess_suffix_observation(model, observation)
     num_steps = int(component.sample_kwargs.get("num_steps", 10))
+    noise = None
+    if deterministic_noise:
+        if not request_id:
+            raise ValueError("request_id is required when deterministic_noise is enabled")
+        actions_shape = (state.shape[0], model.config.action_horizon, model.config.action_dim)
+        noise = build_torch_deterministic_noise(
+            request_id,
+            shape=actions_shape,
+            device=state.device,
+        )
     x_t = run_suffix_denoise(
         model,
         state,
@@ -81,6 +97,8 @@ def run_suffix_denoise_with_cache(
         past_key_values,
         num_steps=num_steps,
         warmup_diffusion_steps=warmup_diffusion_steps,
+        noise=noise,
+        on_step=denoise_step_callback,
     )
     actions = x_t.detach().cpu().numpy()
     if actions.ndim == 3 and actions.shape[0] == 1:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+
 import torch
 from transformers.cache_utils import DynamicCache
 
@@ -24,6 +27,8 @@ def run_suffix_denoise(
     *,
     num_steps: int,
     warmup_diffusion_steps: int = 0,
+    noise: torch.Tensor | None = None,
+    on_step: Callable[[int, int, float, bool], None] | None = None,
 ) -> torch.Tensor:
     """Run denoising loop using external prefix KV cache."""
     if num_steps <= 0:
@@ -35,16 +40,25 @@ def run_suffix_denoise(
     bsize = state.shape[0]
     device = state.device
     actions_shape = (bsize, model.config.action_horizon, model.config.action_dim)
-    noise = model.sample_noise(actions_shape, device)
+    if noise is None:
+        noise = model.sample_noise(actions_shape, device)
+    else:
+        if tuple(noise.shape) != actions_shape:
+            raise ValueError(f"noise shape mismatch: expected={actions_shape} got={tuple(noise.shape)}")
+        noise = noise.to(device=device, dtype=torch.float32)
     model_cache = DynamicCache.from_legacy_cache(past_key_values)
     x_t = noise
 
     def _run_step_range(start_step: int, end_step: int, x: torch.Tensor) -> torch.Tensor:
         for step_idx in range(start_step, end_step):
+            step_start_t = time.perf_counter()
             time_value = 1.0 - (step_idx / float(num_steps))
             expanded_time = torch.full((bsize,), time_value, dtype=torch.float32, device=device)
             v_t = model.denoise_step(state, prefix_pad_masks, model_cache, x, expanded_time)
             x = x + (-1.0 / num_steps) * v_t
+            if on_step is not None:
+                step_elapsed_s = time.perf_counter() - step_start_t
+                on_step(step_idx, num_steps, step_elapsed_s, step_idx < warmup_diffusion_steps)
         return x
 
     x_t = _run_step_range(0, warmup_diffusion_steps, x_t)

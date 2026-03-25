@@ -13,6 +13,7 @@ from examples.pi0_grpc_native.utils import SuffixPipeline
 from examples.pi0_grpc_native.utils import SuffixServiceOptions
 from examples.pi0_grpc_native.utils import adapt_eval_request_to_policy_input
 from examples.pi0_grpc_native.utils import load_suffix_component
+from examples.pi0_grpc_native.utils.runtime import run_suffix_endpoint_startup_warmup
 from .utils.pipeline.execution import V2AsyncOperationManager  # pyright: ignore[reportMissingImports]
 from .utils.pipeline.execution import resolve_execution_overrides  # pyright: ignore[reportMissingImports]
 
@@ -137,6 +138,9 @@ class SuffixServer:
         await self._server.stop(grace_s)
         await self._service.close()
 
+    async def wait_for_termination(self) -> None:
+        await self._server.wait_for_termination()
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Suffix gRPC server (protobuf stub)")
@@ -189,10 +193,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--gpu-ipc-suffix-sidecar-address",
         default=DEFAULT_SUFFIX_SERVICE_OPTIONS.gpu_ipc_suffix_sidecar_address,
     )
+    parser.add_argument(
+        "--gpu-ipc-resolve-mode",
+        choices=["direct", "sidecar_fallback", "sidecar_only"],
+        default=DEFAULT_SUFFIX_SERVICE_OPTIONS.gpu_ipc_resolve_mode,
+    )
+    parser.add_argument("--deterministic-noise", action="store_true")
+    parser.add_argument("--startup-warmup", dest="startup_warmup", action="store_true")
+    parser.add_argument("--disable-startup-warmup", dest="startup_warmup", action="store_false")
+    parser.add_argument("--warmup-runs", type=int, default=1)
+    parser.add_argument("--warmup-timeout-s", type=float, default=90.0)
     parser.set_defaults(
         strict_layer_ordering=DEFAULT_SUFFIX_SERVICE_OPTIONS.strict_layer_ordering,
         allow_stale_cache=DEFAULT_SUFFIX_SERVICE_OPTIONS.allow_stale_cache,
         drop_late_updates=DEFAULT_SUFFIX_SERVICE_OPTIONS.drop_late_updates,
+        startup_warmup=True,
     )
     return parser
 
@@ -227,19 +242,43 @@ def _service_options_from_args(args: argparse.Namespace) -> SuffixServiceOptions
         profile_log_path=args.profile_log_path,
         kv_transfer_mode=args.kv_transfer_mode,
         gpu_ipc_suffix_sidecar_address=args.gpu_ipc_suffix_sidecar_address,
+        gpu_ipc_resolve_mode=args.gpu_ipc_resolve_mode,
+        deterministic_noise=args.deterministic_noise,
     )
 
 
 async def main_async(args: argparse.Namespace) -> None:
     loaded_component = load_suffix_component(_runtime_policy_args(args))
-    await SuffixServer(
+    server = SuffixServer(
         host=args.host,
         port=args.port,
         prefix_host=args.prefix_host,
         prefix_port=args.prefix_port,
         loaded_component=loaded_component,
         options=_service_options_from_args(args),
-    ).serve()
+    )
+    await server.start()
+    if loaded_component is not None and args.startup_warmup:
+        warmup_runs = max(1, int(args.warmup_runs))
+        warmup_address = f"{args.host}:{args.port}"
+        try:
+            warmup_s = await run_suffix_endpoint_startup_warmup(
+                address=warmup_address,
+                policy_name=args.policy_name,
+                runs=warmup_runs,
+                timeout_s=float(args.warmup_timeout_s),
+            )
+            print(
+                f"[suffix] startup warmup done policy={args.policy_name} "
+                f"runs={warmup_runs} warmup_latency_s={warmup_s:.4f}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[suffix] startup warmup skipped due to error: {exc}")
+    elif loaded_component is not None:
+        print("[suffix] startup warmup disabled")
+    else:
+        print("[suffix] startup warmup skipped: policy is not loaded")
+    await server.wait_for_termination()
 
 
 def main() -> None:

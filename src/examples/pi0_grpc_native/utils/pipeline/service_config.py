@@ -47,6 +47,8 @@ class SuffixServiceOptions:
     profile_log_path: str = ""
     kv_transfer_mode: str = "gpu_ipc"
     gpu_ipc_suffix_sidecar_address: str = "127.0.0.1:55061"
+    gpu_ipc_resolve_mode: str = "direct"
+    deterministic_noise: bool = False
 
     def to_pipeline_config(self) -> SuffixPipelineConfig:
         return SuffixPipelineConfig(
@@ -63,4 +65,6 @@ class SuffixServiceOptions:
             profile_log_path=self.profile_log_path,
             kv_transfer_mode=self.kv_transfer_mode,
             gpu_ipc_suffix_sidecar_address=self.gpu_ipc_suffix_sidecar_address,
+            gpu_ipc_resolve_mode=self.gpu_ipc_resolve_mode,
+            deterministic_noise=self.deterministic_noise,
         )

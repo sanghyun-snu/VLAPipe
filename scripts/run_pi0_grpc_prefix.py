@@ -11,6 +11,7 @@ from examples.pi0_grpc_native.prefix import PrefixServer
 from examples.pi0_grpc_native.utils import PrefixServiceOptions
 from examples.pi0_grpc_native.utils import RuntimePolicyArgs
 from examples.pi0_grpc_native.utils import load_prefix_component
+from examples.pi0_grpc_native.utils.runtime import run_prefix_component_startup_warmup
 
 DEFAULT_PREFIX_SERVICE_OPTIONS = PrefixServiceOptions()
 DEFAULT_PREFIX_SIDECAR_BIN = Path(__file__).resolve().parents[1] / "build" / "pi0_sidecar" / "prefix_sidecar"
@@ -58,10 +59,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Reserved for option symmetry with suffix runner; unused in prefix runner.",
     )
     parser.add_argument("--sidecar-ready-timeout-s", type=float, default=10.0)
+    parser.add_argument("--startup-warmup", dest="startup_warmup", action="store_true")
+    parser.add_argument("--disable-startup-warmup", dest="startup_warmup", action="store_false")
+    parser.add_argument("--warmup-runs", type=int, default=1)
     parser.set_defaults(
         prefer_layerwise=DEFAULT_PREFIX_SERVICE_OPTIONS.prefer_layerwise,
         allow_fallback=DEFAULT_PREFIX_SERVICE_OPTIONS.allow_fallback,
         with_sidecar=None,
+        startup_warmup=True,
     )
     return parser
 
@@ -172,6 +177,17 @@ async def main_async(args: argparse.Namespace) -> None:
         print(f"[prefix-runner] using existing sidecar address={args.sidecar_address}")
 
     loaded_component = load_prefix_component(_runtime_policy_args(args))
+    if loaded_component is not None and args.startup_warmup:
+        warmup_runs = max(1, int(args.warmup_runs))
+        warmup_s = run_prefix_component_startup_warmup(loaded_component, args.policy_name, runs=warmup_runs)
+        print(
+            f"[prefix-runner] startup warmup done policy={args.policy_name} "
+            f"runs={warmup_runs} warmup_latency_s={warmup_s:.4f}"
+        )
+    elif loaded_component is not None:
+        print("[prefix-runner] startup warmup disabled")
+    else:
+        print("[prefix-runner] startup warmup skipped: policy is not loaded")
     try:
         await PrefixServer(
             host=args.host,

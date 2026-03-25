@@ -6,6 +6,7 @@ from typing import Any
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
 
 from ..transport.grpc_cache import PrefixClient
+from ..transport.kv_transport import validate_gpu_ipc_resolve_mode
 from ..transport.kv_transport import validate_kv_transfer_mode
 from .execution import make_suffix_execution_strategy
 from .models import PrefixPipelineConfig
@@ -56,6 +57,7 @@ class SuffixPipeline:
         if config.max_staleness_layers < 0:
             raise ValueError(f"max_staleness_layers must be >= 0, got {config.max_staleness_layers}")
         validate_kv_transfer_mode(config.kv_transfer_mode)
+        validate_gpu_ipc_resolve_mode(config.gpu_ipc_resolve_mode)
         self._prefix_client = prefix_client
         self._loaded_component = loaded_component
         self._config = config

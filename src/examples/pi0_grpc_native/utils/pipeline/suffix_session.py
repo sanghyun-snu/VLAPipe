@@ -49,7 +49,10 @@ class SuffixEvalSession:
         self._kv_transfer_mode = validate_kv_transfer_mode(self._config.kv_transfer_mode)
         self._gpu_ipc_resolver: SuffixGpuIpcResolver | None = None
         if self._kv_transfer_mode == "gpu_ipc":
-            self._gpu_ipc_resolver = SuffixGpuIpcResolver(self._config.gpu_ipc_suffix_sidecar_address)
+            self._gpu_ipc_resolver = SuffixGpuIpcResolver(
+                self._config.gpu_ipc_suffix_sidecar_address,
+                resolve_mode=self._config.gpu_ipc_resolve_mode,
+            )
 
     async def run(self) -> pb2.EvalResponse:
         if self._loaded_component is None:
@@ -61,7 +64,7 @@ class SuffixEvalSession:
         model_device = self._loaded_component.device
         expected_num_layers = len(self._loaded_component.model.paligemma_with_expert.gemma_expert.model.layers)
         log_suffix_start(request_id, expected_num_layers, self._config)
-        self._profiler.event(request_id=request_id, pipeline="suffix", event="start")
+        self._profiler.event(request_id=request_id, pipeline="suffix", event="start", value_s=0.0)
 
         scheduler = LayerCacheCollector(
             expected_request_id=request_id,
@@ -71,34 +74,43 @@ class SuffixEvalSession:
 
         try:
             receive_start_t = self._profiler.now()
+            gpu_ipc_lookup_s = 0.0
+            gpu_ipc_open_s = 0.0
+            gpu_ipc_copy_s = 0.0
             async for chunk in self._prefix_client.stream_prefix(
                 prefix_request, timeout_s=self._config.prefix_stream_timeout_s
             ):
+                receive_elapsed_s = self._profiler.now() - self._start_t
                 if chunk.transfer_mode == pb2.KV_TRANSFER_MODE_GPU_IPC:
                     if self._gpu_ipc_resolver is None:
                         raise RuntimeError("gpu_ipc resolver is not initialized")
-                    key_tensor = self._gpu_ipc_resolver.resolve_tensor(
+                    key_tensor, key_timing = self._gpu_ipc_resolver.resolve_tensor_timed(
                         chunk.request_id,
                         int(chunk.layer_idx),
                         "key",
                         chunk.key_handle,
                     )
-                    value_tensor = self._gpu_ipc_resolver.resolve_tensor(
+                    value_tensor, value_timing = self._gpu_ipc_resolver.resolve_tensor_timed(
                         chunk.request_id,
                         int(chunk.layer_idx),
                         "value",
                         chunk.value_handle,
                     )
-                    prefix_pad_mask_tensor = (
-                        self._gpu_ipc_resolver.resolve_tensor(
+                    prefix_pad_mask_tensor = None
+                    mask_timing = None
+                    if chunk.has_prefix_pad_mask:
+                        prefix_pad_mask_tensor, mask_timing = self._gpu_ipc_resolver.resolve_tensor_timed(
                             chunk.request_id,
                             int(chunk.layer_idx),
                             "prefix_pad_mask",
                             chunk.prefix_pad_mask_handle,
                         )
-                        if chunk.has_prefix_pad_mask
-                        else None
-                    )
+                    for timing in (key_timing, value_timing, mask_timing):
+                        if timing is None:
+                            continue
+                        gpu_ipc_lookup_s += timing.sidecar_lookup_s
+                        gpu_ipc_open_s += timing.ipc_open_s
+                        gpu_ipc_copy_s += timing.d2d_copy_s
                 else:
                     key_tensor = proto_to_tensor(chunk.key, device=model_device)
                     value_tensor = proto_to_tensor(chunk.value, device=model_device)
@@ -120,6 +132,7 @@ class SuffixEvalSession:
                     request_id=request_id,
                     pipeline="suffix",
                     event="received_layer",
+                    value_s=receive_elapsed_s,
                     layer_idx=chunk.layer_idx,
                 )
             receive_done_t = self._profiler.now()
@@ -136,6 +149,17 @@ class SuffixEvalSession:
                 value_s=self._state.receive_s,
                 details=f"layers={self._state.received_layers}",
             )
+            if self._state.received_layers > 0 and self._kv_transfer_mode == "gpu_ipc":
+                self._profiler.event(
+                    request_id=request_id,
+                    pipeline="suffix",
+                    event="gpu_ipc_resolve_totals",
+                    value_s=gpu_ipc_lookup_s + gpu_ipc_open_s + gpu_ipc_copy_s,
+                    details=(
+                        f"lookup_s={gpu_ipc_lookup_s:.6f},open_s={gpu_ipc_open_s:.6f},"
+                        f"copy_s={gpu_ipc_copy_s:.6f}"
+                    ),
+                )
             self._profiler.event(
                 request_id=request_id,
                 pipeline="suffix",
@@ -144,12 +168,30 @@ class SuffixEvalSession:
             )
 
             denoise_start_t = self._profiler.now()
+            cache_layers = int(len(layer_caches))
+
+            def _on_denoise_step(step_idx: int, total_steps: int, step_s: float, is_warmup: bool) -> None:
+                self._profiler.event(
+                    request_id=request_id,
+                    pipeline="suffix",
+                    event="denoise_step",
+                    value_s=step_s,
+                    layer_idx=cache_layers,
+                    details=(
+                        f"iteration={step_idx + 1}/{total_steps},"
+                        f"warmup={int(is_warmup)}"
+                    ),
+                )
+
             actions = run_suffix_denoise_with_cache(
                 self._loaded_component,
                 self._raw_policy_input,
                 prefix_pad_masks,
                 layer_caches,
                 warmup_diffusion_steps=self._config.warmup_diffusion_steps,
+                request_id=request_id,
+                deterministic_noise=self._config.deterministic_noise,
+                denoise_step_callback=_on_denoise_step,
             )
             denoise_done_t = self._profiler.now()
             self._state.denoise_s = denoise_done_t - denoise_start_t
@@ -202,4 +244,7 @@ class SuffixEvalSession:
             log_suffix_error(details)
             self._profiler.event(request_id=request_id, pipeline="suffix", event="invalid_stream", details=details)
             await self._context.abort(grpc.StatusCode.FAILED_PRECONDITION, details)
+        finally:
+            if self._gpu_ipc_resolver is not None:
+                self._gpu_ipc_resolver.close()
         raise RuntimeError(f"Suffix pipeline aborted request_id={request_id}")

@@ -51,7 +51,7 @@ class PrefixStreamSession:
         if self._loaded_component is None:
             raise RuntimeError("Prefix split component is not loaded. Start server with component checkpoint args.")
         log_prefix_start(self._request_id, self._config)
-        self._profiler.event(request_id=self._request_id, pipeline="prefix", event="start")
+        self._profiler.event(request_id=self._request_id, pipeline="prefix", event="start", value_s=0.0)
         self._producer_task = asyncio.create_task(
             self._produce_payloads(),
             name=f"prefix-producer-{self._request_id}",

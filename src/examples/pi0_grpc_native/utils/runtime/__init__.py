@@ -5,6 +5,9 @@ from .checkpoint import resolve_runtime_checkpoint
 from .inference import compute_prefix_cache_from_policy
 from .inference import iter_prefix_cache_payloads_from_policy
 from .inference import run_suffix_denoise_with_cache
+from .inference import run_full_policy_startup_warmup
+from .inference import run_prefix_component_startup_warmup
+from .inference import run_suffix_endpoint_startup_warmup
 from .loader import PipelineConfig
 from .loader import PrefixComponent
 from .loader import SuffixComponent
@@ -36,4 +39,7 @@ __all__ = [
     "resolve_runtime_policy",
     "resolve_runtime_checkpoint",
     "run_suffix_denoise_with_cache",
+    "run_full_policy_startup_warmup",
+    "run_prefix_component_startup_warmup",
+    "run_suffix_endpoint_startup_warmup",
 ]

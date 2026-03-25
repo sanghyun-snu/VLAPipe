@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import socket
 import time
 from collections import OrderedDict
+from typing import Literal
 
 import grpc
 import torch
@@ -18,6 +19,7 @@ from examples.pi0_grpc_native.utils.transport.sidecar_proto_gen import gpu_ipc_s
 from examples.pi0_grpc_native.utils.transport.sidecar_proto_gen import (
     gpu_ipc_sidecar_pb2_grpc as sidecar_pb2_grpc,  # pyright: ignore[reportMissingImports]
 )
+from .kv_transport import validate_gpu_ipc_resolve_mode
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,14 @@ class _OpenedDevicePointer:
     dev_ptr: int
     opened_at_s: float
     last_used_s: float
+
+
+@dataclass(frozen=True)
+class ResolveTiming:
+    source: Literal["direct", "sidecar", "sidecar_fallback"]
+    sidecar_lookup_s: float
+    ipc_open_s: float
+    d2d_copy_s: float
 
 
 class _CudaIpcMemHandle(ctypes.Structure):
@@ -261,9 +271,10 @@ class PrefixGpuIpcPublisher:
 class SuffixGpuIpcResolver:
     """Resolve CUDA IPC handles to local CUDA tensors."""
 
-    def __init__(self, sidecar_address: str) -> None:
+    def __init__(self, sidecar_address: str, *, resolve_mode: str = "direct") -> None:
         self._sidecar_address = sidecar_address
         _require_sidecar_reachable(self._sidecar_address)
+        self._resolve_mode = validate_gpu_ipc_resolve_mode(resolve_mode)
         self._sidecar_channel = grpc.insecure_channel(self._sidecar_address)
         self._sidecar_stub = sidecar_pb2_grpc.GpuIpcSidecarStub(self._sidecar_channel)
         self._opened_cache: OrderedDict[str, _OpenedDevicePointer] = OrderedDict()
@@ -271,8 +282,35 @@ class SuffixGpuIpcResolver:
         self._opened_ttl_s = 60.0
 
     def resolve_tensor(self, request_id: str, layer_idx: int, name: str, handle: pb2.GpuIpcHandle) -> torch.Tensor:
-        resolved = self._resolve_handle_from_sidecar(request_id, layer_idx, name)
-        effective_handle = resolved if resolved is not None else handle
+        tensor, _timing = self.resolve_tensor_timed(request_id, layer_idx, name, handle)
+        return tensor
+
+    def resolve_tensor_timed(
+        self,
+        request_id: str,
+        layer_idx: int,
+        name: str,
+        handle: pb2.GpuIpcHandle,
+    ) -> tuple[torch.Tensor, ResolveTiming]:
+        sidecar_lookup_s = 0.0
+        source: Literal["direct", "sidecar", "sidecar_fallback"] = "direct"
+        effective_handle = handle
+        if self._resolve_mode != "direct":
+            lookup_start_t = time.perf_counter()
+            resolved = self._resolve_handle_from_sidecar(request_id, layer_idx, name)
+            sidecar_lookup_s = time.perf_counter() - lookup_start_t
+            if self._resolve_mode == "sidecar_only":
+                if resolved is None:
+                    raise RuntimeError(
+                        f"sidecar-only resolve failed request_id={request_id} layer_idx={layer_idx} name={name}"
+                    )
+                effective_handle = resolved
+                source = "sidecar"
+            elif resolved is not None:
+                effective_handle = resolved
+                source = "sidecar"
+            else:
+                source = "sidecar_fallback"
         if not effective_handle.handle_id:
             raise ValueError(
                 f"gpu_ipc handle_id is required request_id={request_id} layer_idx={layer_idx} name={name}"
@@ -284,10 +322,17 @@ class SuffixGpuIpcResolver:
             raise ValueError(f"invalid empty shape in gpu_ipc handle request_id={request_id} layer_idx={layer_idx}")
         torch.cuda.set_device(device_index)
         out = torch.empty(shape, dtype=dtype, device=torch.device("cuda", device_index))
-        src_ptr = self._get_or_open_device_ptr(effective_handle.handle_id)
+        src_ptr, ipc_open_s = self._get_or_open_device_ptr(effective_handle.handle_id)
+        copy_start_t = time.perf_counter()
         _cuda_runtime().memcpy_d2d(out.data_ptr(), src_ptr, int(effective_handle.nbytes))
+        d2d_copy_s = time.perf_counter() - copy_start_t
         self._prune_opened_cache()
-        return out
+        return out, ResolveTiming(
+            source=source,
+            sidecar_lookup_s=sidecar_lookup_s,
+            ipc_open_s=ipc_open_s,
+            d2d_copy_s=d2d_copy_s,
+        )
 
     def _resolve_handle_from_sidecar(
         self, request_id: str, layer_idx: int, name: str
@@ -307,7 +352,7 @@ class SuffixGpuIpcResolver:
             return None
         return response.handle
 
-    def _get_or_open_device_ptr(self, handle_id: str) -> int:
+    def _get_or_open_device_ptr(self, handle_id: str) -> tuple[int, float]:
         now = time.monotonic()
         cached = self._opened_cache.get(handle_id)
         if cached is not None:
@@ -316,25 +361,30 @@ class SuffixGpuIpcResolver:
                 opened_at_s=cached.opened_at_s,
                 last_used_s=now,
             )
-            return cached.dev_ptr
+            self._opened_cache.move_to_end(handle_id, last=True)
+            return cached.dev_ptr, 0.0
+        open_start_t = time.perf_counter()
         dev_ptr = _cuda_runtime().open_mem_handle(_decode_handle_id(handle_id))
+        ipc_open_s = time.perf_counter() - open_start_t
         self._opened_cache[handle_id] = _OpenedDevicePointer(
             dev_ptr=dev_ptr,
             opened_at_s=now,
             last_used_s=now,
         )
-        return dev_ptr
+        return dev_ptr, ipc_open_s
 
     def _prune_opened_cache(self) -> None:
         now = time.monotonic()
+        while self._opened_cache and len(self._opened_cache) > self._max_opened_handles:
+            _oldest_key, oldest = self._opened_cache.popitem(last=False)
+            _cuda_runtime().close_mem_handle(oldest.dev_ptr)
         while self._opened_cache:
             oldest_key = next(iter(self._opened_cache))
             oldest = self._opened_cache[oldest_key]
-            if len(self._opened_cache) > self._max_opened_handles or (now - oldest.last_used_s) > self._opened_ttl_s:
-                _cuda_runtime().close_mem_handle(oldest.dev_ptr)
-                self._opened_cache.pop(oldest_key, None)
-                continue
-            break
+            if (now - oldest.last_used_s) <= self._opened_ttl_s:
+                break
+            _cuda_runtime().close_mem_handle(oldest.dev_ptr)
+            self._opened_cache.pop(oldest_key, None)
 
     def close(self) -> None:
         while self._opened_cache:

@@ -36,7 +36,10 @@ class V2AsyncCacheStrategy:
         self._kv_transfer_mode = validate_kv_transfer_mode(config.kv_transfer_mode)
         self._gpu_ipc_resolver: SuffixGpuIpcResolver | None = None
         if self._kv_transfer_mode == "gpu_ipc":
-            self._gpu_ipc_resolver = SuffixGpuIpcResolver(self._config.gpu_ipc_suffix_sidecar_address)
+            self._gpu_ipc_resolver = SuffixGpuIpcResolver(
+                self._config.gpu_ipc_suffix_sidecar_address,
+                resolve_mode=self._config.gpu_ipc_resolve_mode,
+            )
 
     async def run(
         self,
@@ -73,6 +76,9 @@ class V2AsyncCacheStrategy:
         prefix_pad_mask = None
         highest_contiguous_layer = -1
         last_seen_layer_idx = -1
+        gpu_ipc_lookup_s = 0.0
+        gpu_ipc_open_s = 0.0
+        gpu_ipc_copy_s = 0.0
 
         def _build_snapshot(epoch_layers: int) -> tuple[Any, tuple]:
             if prefix_pad_mask is None:
@@ -112,25 +118,32 @@ class V2AsyncCacheStrategy:
                     if chunk.transfer_mode == pb2.KV_TRANSFER_MODE_GPU_IPC:
                         if self._gpu_ipc_resolver is None:
                             raise RuntimeError("gpu_ipc resolver is not initialized")
-                        key_tensor = self._gpu_ipc_resolver.resolve_tensor(
+                        key_tensor, key_timing = self._gpu_ipc_resolver.resolve_tensor_timed(
                             chunk.request_id,
                             layer_idx,
                             "key",
                             chunk.key_handle,
                         )
-                        value_tensor = self._gpu_ipc_resolver.resolve_tensor(
+                        value_tensor, value_timing = self._gpu_ipc_resolver.resolve_tensor_timed(
                             chunk.request_id,
                             layer_idx,
                             "value",
                             chunk.value_handle,
                         )
+                        for timing in (key_timing, value_timing):
+                            gpu_ipc_lookup_s += timing.sidecar_lookup_s
+                            gpu_ipc_open_s += timing.ipc_open_s
+                            gpu_ipc_copy_s += timing.d2d_copy_s
                         if chunk.has_prefix_pad_mask:
-                            prefix_pad_mask = self._gpu_ipc_resolver.resolve_tensor(
+                            prefix_pad_mask, mask_timing = self._gpu_ipc_resolver.resolve_tensor_timed(
                                 chunk.request_id,
                                 layer_idx,
                                 "prefix_pad_mask",
                                 chunk.prefix_pad_mask_handle,
                             )
+                            gpu_ipc_lookup_s += mask_timing.sidecar_lookup_s
+                            gpu_ipc_open_s += mask_timing.ipc_open_s
+                            gpu_ipc_copy_s += mask_timing.d2d_copy_s
                     else:
                         key_tensor = proto_to_tensor(chunk.key, device=model_device)
                         value_tensor = proto_to_tensor(chunk.value, device=model_device)
@@ -195,12 +208,30 @@ class V2AsyncCacheStrategy:
                 stop_updates.set()
                 await _emit("late_updates_stop_requested", cache_epoch=epoch)
             await _emit("suffix_denoise_start")
+            cache_layers = int(len(layer_caches))
+
+            def _on_denoise_step(step_idx: int, total_steps: int, step_s: float, is_warmup: bool) -> None:
+                self._profiler.event(
+                    request_id=request_id,
+                    pipeline="suffix",
+                    event="denoise_step_v2",
+                    value_s=step_s,
+                    layer_idx=cache_layers,
+                    details=(
+                        f"iteration={step_idx + 1}/{total_steps},"
+                        f"warmup={int(is_warmup)}"
+                    ),
+                )
+
             actions = run_suffix_denoise_with_cache(
                 self._loaded_component,
                 raw_policy_input,
                 prefix_pad_masks,
                 layer_caches,
                 warmup_diffusion_steps=self._config.warmup_diffusion_steps,
+                request_id=request_id,
+                deterministic_noise=self._config.deterministic_noise,
+                denoise_step_callback=_on_denoise_step,
             )
             await _emit("suffix_denoise_done")
             actions = np.asarray(actions, dtype=np.float32)
@@ -213,6 +244,17 @@ class V2AsyncCacheStrategy:
         producer_task = asyncio.create_task(_producer(), name=f"v2-producer-{request_id}")
         try:
             result = await _consumer()
+            if self._kv_transfer_mode == "gpu_ipc" and received_layers > 0:
+                self._profiler.event(
+                    request_id=request_id,
+                    pipeline="suffix",
+                    event="gpu_ipc_resolve_totals_v2",
+                    value_s=gpu_ipc_lookup_s + gpu_ipc_open_s + gpu_ipc_copy_s,
+                    details=(
+                        f"lookup_s={gpu_ipc_lookup_s:.6f},open_s={gpu_ipc_open_s:.6f},"
+                        f"copy_s={gpu_ipc_copy_s:.6f},layers={received_layers}"
+                    ),
+                )
             await _emit("done", cache_epoch=highest_contiguous_layer + 1)
             return result
         except grpc.aio.AioRpcError as exc:
@@ -240,3 +282,5 @@ class V2AsyncCacheStrategy:
                 await producer_task
             except asyncio.CancelledError:
                 pass
+            if self._gpu_ipc_resolver is not None:
+                self._gpu_ipc_resolver.close()
