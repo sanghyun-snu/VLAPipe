@@ -2,7 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-from . import pi0_pipeline_pb2 as pi0__pipeline__pb2
+import pi0_pipeline_pb2 as pi0__pipeline__pb2
 
 
 class PrefixServiceStub(object):
@@ -80,12 +80,67 @@ class SuffixServiceStub(object):
                 request_serializer=pi0__pipeline__pb2.EvalRequest.SerializeToString,
                 response_deserializer=pi0__pipeline__pb2.EvalResponse.FromString,
                 )
+        self.EvaluateLayerPipeline = channel.unary_unary(
+                '/openpi.examples.pi0grpc.SuffixService/EvaluateLayerPipeline',
+                request_serializer=pi0__pipeline__pb2.EvaluatePipelineRequest.SerializeToString,
+                response_deserializer=pi0__pipeline__pb2.EvalResponse.FromString,
+                )
+        self.SubmitEvaluate = channel.unary_unary(
+                '/openpi.examples.pi0grpc.SuffixService/SubmitEvaluate',
+                request_serializer=pi0__pipeline__pb2.SubmitEvaluateRequest.SerializeToString,
+                response_deserializer=pi0__pipeline__pb2.SubmitEvaluateResponse.FromString,
+                )
+        self.GetEvaluateResult = channel.unary_unary(
+                '/openpi.examples.pi0grpc.SuffixService/GetEvaluateResult',
+                request_serializer=pi0__pipeline__pb2.GetEvaluateResultRequest.SerializeToString,
+                response_deserializer=pi0__pipeline__pb2.GetEvaluateResultResponse.FromString,
+                )
+        self.WatchEvaluate = channel.unary_stream(
+                '/openpi.examples.pi0grpc.SuffixService/WatchEvaluate',
+                request_serializer=pi0__pipeline__pb2.WatchEvaluateRequest.SerializeToString,
+                response_deserializer=pi0__pipeline__pb2.EvaluateEvent.FromString,
+                )
+        self.CancelEvaluate = channel.unary_unary(
+                '/openpi.examples.pi0grpc.SuffixService/CancelEvaluate',
+                request_serializer=pi0__pipeline__pb2.CancelEvaluateRequest.SerializeToString,
+                response_deserializer=pi0__pipeline__pb2.CancelEvaluateResponse.FromString,
+                )
 
 
 class SuffixServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Evaluate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EvaluateLayerPipeline(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubmitEvaluate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetEvaluateResult(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WatchEvaluate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CancelEvaluate(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -98,6 +153,31 @@ def add_SuffixServiceServicer_to_server(servicer, server):
                     servicer.Evaluate,
                     request_deserializer=pi0__pipeline__pb2.EvalRequest.FromString,
                     response_serializer=pi0__pipeline__pb2.EvalResponse.SerializeToString,
+            ),
+            'EvaluateLayerPipeline': grpc.unary_unary_rpc_method_handler(
+                    servicer.EvaluateLayerPipeline,
+                    request_deserializer=pi0__pipeline__pb2.EvaluatePipelineRequest.FromString,
+                    response_serializer=pi0__pipeline__pb2.EvalResponse.SerializeToString,
+            ),
+            'SubmitEvaluate': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitEvaluate,
+                    request_deserializer=pi0__pipeline__pb2.SubmitEvaluateRequest.FromString,
+                    response_serializer=pi0__pipeline__pb2.SubmitEvaluateResponse.SerializeToString,
+            ),
+            'GetEvaluateResult': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetEvaluateResult,
+                    request_deserializer=pi0__pipeline__pb2.GetEvaluateResultRequest.FromString,
+                    response_serializer=pi0__pipeline__pb2.GetEvaluateResultResponse.SerializeToString,
+            ),
+            'WatchEvaluate': grpc.unary_stream_rpc_method_handler(
+                    servicer.WatchEvaluate,
+                    request_deserializer=pi0__pipeline__pb2.WatchEvaluateRequest.FromString,
+                    response_serializer=pi0__pipeline__pb2.EvaluateEvent.SerializeToString,
+            ),
+            'CancelEvaluate': grpc.unary_unary_rpc_method_handler(
+                    servicer.CancelEvaluate,
+                    request_deserializer=pi0__pipeline__pb2.CancelEvaluateRequest.FromString,
+                    response_serializer=pi0__pipeline__pb2.CancelEvaluateResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -123,5 +203,90 @@ class SuffixService(object):
         return grpc.experimental.unary_unary(request, target, '/openpi.examples.pi0grpc.SuffixService/Evaluate',
             pi0__pipeline__pb2.EvalRequest.SerializeToString,
             pi0__pipeline__pb2.EvalResponse.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def EvaluateLayerPipeline(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/openpi.examples.pi0grpc.SuffixService/EvaluateLayerPipeline',
+            pi0__pipeline__pb2.EvaluatePipelineRequest.SerializeToString,
+            pi0__pipeline__pb2.EvalResponse.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def SubmitEvaluate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/openpi.examples.pi0grpc.SuffixService/SubmitEvaluate',
+            pi0__pipeline__pb2.SubmitEvaluateRequest.SerializeToString,
+            pi0__pipeline__pb2.SubmitEvaluateResponse.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def GetEvaluateResult(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/openpi.examples.pi0grpc.SuffixService/GetEvaluateResult',
+            pi0__pipeline__pb2.GetEvaluateResultRequest.SerializeToString,
+            pi0__pipeline__pb2.GetEvaluateResultResponse.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def WatchEvaluate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(request, target, '/openpi.examples.pi0grpc.SuffixService/WatchEvaluate',
+            pi0__pipeline__pb2.WatchEvaluateRequest.SerializeToString,
+            pi0__pipeline__pb2.EvaluateEvent.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def CancelEvaluate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/openpi.examples.pi0grpc.SuffixService/CancelEvaluate',
+            pi0__pipeline__pb2.CancelEvaluateRequest.SerializeToString,
+            pi0__pipeline__pb2.CancelEvaluateResponse.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)

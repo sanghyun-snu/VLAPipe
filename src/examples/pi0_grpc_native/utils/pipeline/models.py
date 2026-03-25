@@ -28,6 +28,13 @@ class PrefixStreamState:
 class SuffixPipelineConfig:
     prefix_stream_timeout_s: float = 30.0
     strict_layer_ordering: bool = True
+    execution_mode: str = "v1_layer_pipeline"
+    warmup_diffusion_steps: int = 1
+    max_inflight_updates: int = 2
+    cache_ttl_ms: int = 0
+    allow_stale_cache: bool = False
+    max_staleness_layers: int = 0
+    drop_late_updates: bool = False
     enable_profiling: bool = False
     profile_log_path: str = ""
 

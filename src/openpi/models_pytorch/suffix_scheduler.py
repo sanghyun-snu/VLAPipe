@@ -23,20 +23,30 @@ def run_suffix_denoise(
     past_key_values: tuple,
     *,
     num_steps: int,
+    warmup_diffusion_steps: int = 0,
 ) -> torch.Tensor:
     """Run denoising loop using external prefix KV cache."""
+    if num_steps <= 0:
+        raise ValueError(f"num_steps must be > 0, got {num_steps}")
+    if warmup_diffusion_steps < 0:
+        raise ValueError(f"warmup_diffusion_steps must be >= 0, got {warmup_diffusion_steps}")
+    warmup_diffusion_steps = min(warmup_diffusion_steps, num_steps)
+
     bsize = state.shape[0]
     device = state.device
     actions_shape = (bsize, model.config.action_horizon, model.config.action_dim)
     noise = model.sample_noise(actions_shape, device)
     model_cache = DynamicCache.from_legacy_cache(past_key_values)
-
-    dt = torch.tensor(-1.0 / num_steps, dtype=torch.float32, device=device)
     x_t = noise
-    time = torch.tensor(1.0, dtype=torch.float32, device=device)
-    while time >= -dt / 2:
-        expanded_time = time.expand(bsize)
-        v_t = model.denoise_step(state, prefix_pad_masks, model_cache, x_t, expanded_time)
-        x_t = x_t + dt * v_t
-        time += dt
+
+    def _run_step_range(start_step: int, end_step: int, x: torch.Tensor) -> torch.Tensor:
+        for step_idx in range(start_step, end_step):
+            time_value = 1.0 - (step_idx / float(num_steps))
+            expanded_time = torch.full((bsize,), time_value, dtype=torch.float32, device=device)
+            v_t = model.denoise_step(state, prefix_pad_masks, model_cache, x, expanded_time)
+            x = x + (-1.0 / num_steps) * v_t
+        return x
+
+    x_t = _run_step_range(0, warmup_diffusion_steps, x_t)
+    x_t = _run_step_range(warmup_diffusion_steps, num_steps, x_t)
     return x_t

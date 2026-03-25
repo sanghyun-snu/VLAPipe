@@ -10,18 +10,17 @@ from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2_grpc as pb2_grpc
 from examples.pi0_grpc_native.utils import PrefixClient
 from examples.pi0_grpc_native.utils import RuntimePolicyArgs
 from examples.pi0_grpc_native.utils import SuffixPipeline
-from examples.pi0_grpc_native.utils import SuffixPipelineConfig
+from examples.pi0_grpc_native.utils import SuffixServiceOptions
 from examples.pi0_grpc_native.utils import adapt_eval_request_to_policy_input
 from examples.pi0_grpc_native.utils import load_suffix_component
+from .utils.pipeline.execution import V2AsyncOperationManager  # pyright: ignore[reportMissingImports]
+from .utils.pipeline.execution import resolve_execution_overrides  # pyright: ignore[reportMissingImports]
 
 DEFAULT_SUFFIX_HOST = "127.0.0.1"
 DEFAULT_SUFFIX_PORT = 50061
 DEFAULT_PREFIX_HOST = "127.0.0.1"
 DEFAULT_PREFIX_PORT = 50062
-DEFAULT_PREFIX_STREAM_TIMEOUT_S = 30.0
-DEFAULT_STRICT_LAYER_ORDERING = True
-DEFAULT_ENABLE_PROFILING = False
-DEFAULT_PROFILE_LOG_PATH = ""
+DEFAULT_SUFFIX_SERVICE_OPTIONS = SuffixServiceOptions()
 
 
 class SuffixService(pb2_grpc.SuffixServiceServicer):
@@ -30,23 +29,19 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
         *,
         prefix_address: str,
         loaded_component=None,
-        prefix_stream_timeout_s: float = DEFAULT_PREFIX_STREAM_TIMEOUT_S,
-        strict_layer_ordering: bool = DEFAULT_STRICT_LAYER_ORDERING,
-        enable_profiling: bool = DEFAULT_ENABLE_PROFILING,
-        profile_log_path: str = DEFAULT_PROFILE_LOG_PATH,
+        options: SuffixServiceOptions = DEFAULT_SUFFIX_SERVICE_OPTIONS,
     ) -> None:
-        if prefix_stream_timeout_s <= 0:
-            raise ValueError(f"prefix_stream_timeout_s must be > 0, got {prefix_stream_timeout_s}")
+        if options.prefix_stream_timeout_s <= 0:
+            raise ValueError(f"prefix_stream_timeout_s must be > 0, got {options.prefix_stream_timeout_s}")
+        if options.warmup_diffusion_steps < 0:
+            raise ValueError(f"warmup_diffusion_steps must be >= 0, got {options.warmup_diffusion_steps}")
+        self._service_options = options
         self._pipeline = SuffixPipeline(
             prefix_client=PrefixClient(address=prefix_address),
             loaded_component=loaded_component,
-            config=SuffixPipelineConfig(
-                prefix_stream_timeout_s=prefix_stream_timeout_s,
-                strict_layer_ordering=strict_layer_ordering,
-                enable_profiling=enable_profiling,
-                profile_log_path=profile_log_path,
-            ),
+            config=self._service_options.to_pipeline_config(),
         )
+        self._v2_ops = V2AsyncOperationManager()
 
     async def Evaluate(self, request: pb2.EvalRequest, context) -> pb2.EvalResponse:
         adapted = adapt_eval_request_to_policy_input(request)
@@ -57,7 +52,54 @@ class SuffixService(pb2_grpc.SuffixServiceServicer):
             context=context,
         )
 
+    async def EvaluateLayerPipeline(self, request: pb2.EvaluatePipelineRequest, context) -> pb2.EvalResponse:
+        eval_request = request.eval_request
+        adapted = adapt_eval_request_to_policy_input(eval_request)
+        overrides = resolve_execution_overrides(
+            request.execution,
+            default_execution_mode=self._service_options.execution_mode,
+            default_warmup_diffusion_steps=self._service_options.warmup_diffusion_steps,
+            default_strict_layer_ordering=self._service_options.strict_layer_ordering,
+            default_max_inflight_updates=self._service_options.max_inflight_updates,
+            default_cache_ttl_ms=self._service_options.cache_ttl_ms,
+            default_allow_stale_cache=self._service_options.allow_stale_cache,
+            default_max_staleness_layers=self._service_options.max_staleness_layers,
+            default_drop_late_updates=self._service_options.drop_late_updates,
+        )
+        return await self._pipeline.evaluate(
+            request=eval_request,
+            raw_policy_input=adapted.raw_policy_input,
+            policy_name=adapted.policy_name,
+            context=context,
+            execution_mode=overrides.execution_mode,
+            warmup_diffusion_steps=overrides.warmup_diffusion_steps,
+            strict_layer_ordering=overrides.strict_layer_ordering,
+            max_inflight_updates=overrides.max_inflight_updates,
+            cache_ttl_ms=overrides.cache_ttl_ms,
+            allow_stale_cache=overrides.allow_stale_cache,
+            max_staleness_layers=overrides.max_staleness_layers,
+            drop_late_updates=overrides.drop_late_updates,
+        )
+
+    async def SubmitEvaluate(self, request: pb2.SubmitEvaluateRequest, context) -> pb2.SubmitEvaluateResponse:
+        return await self._v2_ops.submit(
+            request=request,
+            evaluate_pipeline=self.EvaluateLayerPipeline,
+            context=context,
+        )
+
+    async def GetEvaluateResult(self, request: pb2.GetEvaluateResultRequest, context) -> pb2.GetEvaluateResultResponse:
+        return await self._v2_ops.get_result(request=request, context=context)
+
+    async def WatchEvaluate(self, request: pb2.WatchEvaluateRequest, context):
+        async for event in self._v2_ops.watch(request=request, context=context):
+            yield event
+
+    async def CancelEvaluate(self, request: pb2.CancelEvaluateRequest, context) -> pb2.CancelEvaluateResponse:
+        return await self._v2_ops.cancel(request=request)
+
     async def close(self) -> None:
+        await self._v2_ops.close()
         await self._pipeline.close()
 
 
@@ -70,19 +112,13 @@ class SuffixServer:
         prefix_port: int,
         loaded_component=None,
         *,
-        prefix_stream_timeout_s: float = DEFAULT_PREFIX_STREAM_TIMEOUT_S,
-        strict_layer_ordering: bool = DEFAULT_STRICT_LAYER_ORDERING,
-        enable_profiling: bool = DEFAULT_ENABLE_PROFILING,
-        profile_log_path: str = DEFAULT_PROFILE_LOG_PATH,
+        options: SuffixServiceOptions = DEFAULT_SUFFIX_SERVICE_OPTIONS,
     ) -> None:
         self._address = f"{host}:{port}"
         self._service = SuffixService(
             prefix_address=f"{prefix_host}:{prefix_port}",
             loaded_component=loaded_component,
-            prefix_stream_timeout_s=prefix_stream_timeout_s,
-            strict_layer_ordering=strict_layer_ordering,
-            enable_profiling=enable_profiling,
-            profile_log_path=profile_log_path,
+            options=options,
         )
         self._server = grpc.aio.server()
         pb2_grpc.add_SuffixServiceServicer_to_server(self._service, self._server)
@@ -118,40 +154,80 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-convert-checkpoint", action="store_true")
     parser.add_argument("--converted-checkpoint-dir", default="")
     parser.add_argument("--convert-precision", choices=["float32", "bfloat16", "float16"], default="bfloat16")
-    parser.add_argument("--prefix-stream-timeout-s", type=float, default=DEFAULT_PREFIX_STREAM_TIMEOUT_S)
-    parser.add_argument("--strict-layer-ordering", dest="strict_layer_ordering", action="store_true")
-    parser.add_argument("--disable-strict-layer-ordering", dest="strict_layer_ordering", action="store_false")
+    parser.add_argument("--prefix-stream-timeout-s", type=float, default=DEFAULT_SUFFIX_SERVICE_OPTIONS.prefix_stream_timeout_s)
+    parser.add_argument(
+        "--strict-layer-ordering",
+        dest="strict_layer_ordering",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--disable-strict-layer-ordering",
+        dest="strict_layer_ordering",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--execution-mode",
+        choices=["v1_layer_pipeline", "v2_async_cache"],
+        default=DEFAULT_SUFFIX_SERVICE_OPTIONS.execution_mode,
+    )
+    parser.add_argument("--warmup-diffusion-steps", type=int, default=DEFAULT_SUFFIX_SERVICE_OPTIONS.warmup_diffusion_steps)
+    parser.add_argument("--max-inflight-updates", type=int, default=DEFAULT_SUFFIX_SERVICE_OPTIONS.max_inflight_updates)
+    parser.add_argument("--cache-ttl-ms", type=int, default=DEFAULT_SUFFIX_SERVICE_OPTIONS.cache_ttl_ms)
+    parser.add_argument("--allow-stale-cache", action="store_true")
+    parser.add_argument("--disable-allow-stale-cache", dest="allow_stale_cache", action="store_false")
+    parser.add_argument("--max-staleness-layers", type=int, default=DEFAULT_SUFFIX_SERVICE_OPTIONS.max_staleness_layers)
+    parser.add_argument("--drop-late-updates", action="store_true")
+    parser.add_argument("--disable-drop-late-updates", dest="drop_late_updates", action="store_false")
     parser.add_argument("--enable-profiling", action="store_true")
-    parser.add_argument("--profile-log-path", default=DEFAULT_PROFILE_LOG_PATH)
-    parser.set_defaults(strict_layer_ordering=DEFAULT_STRICT_LAYER_ORDERING)
+    parser.add_argument("--profile-log-path", default=DEFAULT_SUFFIX_SERVICE_OPTIONS.profile_log_path)
+    parser.set_defaults(
+        strict_layer_ordering=DEFAULT_SUFFIX_SERVICE_OPTIONS.strict_layer_ordering,
+        allow_stale_cache=DEFAULT_SUFFIX_SERVICE_OPTIONS.allow_stale_cache,
+        drop_late_updates=DEFAULT_SUFFIX_SERVICE_OPTIONS.drop_late_updates,
+    )
     return parser
 
 
-async def main_async(args: argparse.Namespace) -> None:
-    loaded_component = load_suffix_component(
-        RuntimePolicyArgs(
-            policy_train_config=args.policy_train_config,
-            policy_checkpoint_dir=args.policy_checkpoint_dir,
-            policy_name=args.policy_name,
-            checkpoint_map_json=args.checkpoint_map_json,
-            auto_download_checkpoint=args.auto_download_checkpoint,
-            force_download_checkpoint=args.force_download_checkpoint,
-            policy_device=args.policy_device,
-            auto_convert_checkpoint=args.auto_convert_checkpoint,
-            converted_checkpoint_dir=args.converted_checkpoint_dir,
-            convert_precision=args.convert_precision,
-        )
+def _runtime_policy_args(args: argparse.Namespace) -> RuntimePolicyArgs:
+    return RuntimePolicyArgs(
+        policy_train_config=args.policy_train_config,
+        policy_checkpoint_dir=args.policy_checkpoint_dir,
+        policy_name=args.policy_name,
+        checkpoint_map_json=args.checkpoint_map_json,
+        auto_download_checkpoint=args.auto_download_checkpoint,
+        force_download_checkpoint=args.force_download_checkpoint,
+        policy_device=args.policy_device,
+        auto_convert_checkpoint=args.auto_convert_checkpoint,
+        converted_checkpoint_dir=args.converted_checkpoint_dir,
+        convert_precision=args.convert_precision,
     )
+
+
+def _service_options_from_args(args: argparse.Namespace) -> SuffixServiceOptions:
+    return SuffixServiceOptions(
+        prefix_stream_timeout_s=args.prefix_stream_timeout_s,
+        strict_layer_ordering=args.strict_layer_ordering,
+        execution_mode=args.execution_mode,
+        warmup_diffusion_steps=args.warmup_diffusion_steps,
+        max_inflight_updates=args.max_inflight_updates,
+        cache_ttl_ms=args.cache_ttl_ms,
+        allow_stale_cache=args.allow_stale_cache,
+        max_staleness_layers=args.max_staleness_layers,
+        drop_late_updates=args.drop_late_updates,
+        enable_profiling=args.enable_profiling,
+        profile_log_path=args.profile_log_path,
+    )
+
+
+async def main_async(args: argparse.Namespace) -> None:
+    loaded_component = load_suffix_component(_runtime_policy_args(args))
     await SuffixServer(
         host=args.host,
         port=args.port,
         prefix_host=args.prefix_host,
         prefix_port=args.prefix_port,
         loaded_component=loaded_component,
-        prefix_stream_timeout_s=args.prefix_stream_timeout_s,
-        strict_layer_ordering=args.strict_layer_ordering,
-        enable_profiling=args.enable_profiling,
-        profile_log_path=args.profile_log_path,
+        options=_service_options_from_args(args),
     ).serve()
 
 

@@ -114,6 +114,7 @@ class SuffixEvalSession:
                 self._raw_policy_input,
                 prefix_pad_masks,
                 layer_caches,
+                warmup_diffusion_steps=self._config.warmup_diffusion_steps,
             )
             denoise_done_t = self._profiler.now()
             self._state.denoise_s = denoise_done_t - denoise_start_t
@@ -140,12 +141,21 @@ class SuffixEvalSession:
                 message=message,
             )
         except grpc.aio.AioRpcError as exc:
+            rpc_code = exc.code()
             details = (
                 f"prefix stream RPC failed request_id={request_id} "
-                f"code={exc.code().name} details={exc.details()}"
+                f"code={rpc_code.name} details={exc.details()}"
             )
             log_suffix_error(details)
             self._profiler.event(request_id=request_id, pipeline="suffix", event="rpc_error", details=details)
+            if rpc_code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                await self._context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, details)
+            elif rpc_code == grpc.StatusCode.CANCELLED:
+                await self._context.abort(grpc.StatusCode.CANCELLED, details)
+            elif rpc_code == grpc.StatusCode.FAILED_PRECONDITION:
+                await self._context.abort(grpc.StatusCode.FAILED_PRECONDITION, details)
+            elif rpc_code == grpc.StatusCode.INVALID_ARGUMENT:
+                await self._context.abort(grpc.StatusCode.INVALID_ARGUMENT, details)
             await self._context.abort(grpc.StatusCode.UNAVAILABLE, details)
         except TimeoutError as exc:
             details = f"prefix stream timeout request_id={request_id}: {exc}"

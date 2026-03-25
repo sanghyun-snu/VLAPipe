@@ -16,6 +16,8 @@ from .pipeline import SuffixPipeline
 from .prefix_session import PrefixStreamSession
 from .profile import PipelineProfiler
 from .profile import PipelineProfilerConfig
+from .service_config import PrefixServiceOptions
+from .service_config import SuffixServiceOptions
 from .suffix_session import SuffixEvalSession
 
 __all__ = [
@@ -29,6 +31,8 @@ __all__ = [
     "SuffixEvalSession",
     "PipelineProfiler",
     "PipelineProfilerConfig",
+    "PrefixServiceOptions",
+    "SuffixServiceOptions",
     "log_prefix_start",
     "log_prefix_backpressure",
     "log_prefix_emit",

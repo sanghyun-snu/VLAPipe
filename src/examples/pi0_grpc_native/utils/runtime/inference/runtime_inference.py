@@ -62,7 +62,14 @@ def iter_prefix_cache_payloads_from_policy(
     )
 
 
-def run_suffix_denoise_with_cache(component, raw_policy_input: dict[str, Any], prefix_pad_masks: torch.Tensor, past_key_values: tuple) -> np.ndarray:
+def run_suffix_denoise_with_cache(
+    component,
+    raw_policy_input: dict[str, Any],
+    prefix_pad_masks: torch.Tensor,
+    past_key_values: tuple,
+    *,
+    warmup_diffusion_steps: int = 0,
+) -> np.ndarray:
     model = component.model
     transformed_inputs, observation = _prepare_component_inputs(component, raw_policy_input)
     state, _device = preprocess_suffix_observation(model, observation)
@@ -73,6 +80,7 @@ def run_suffix_denoise_with_cache(component, raw_policy_input: dict[str, Any], p
         prefix_pad_masks,
         past_key_values,
         num_steps=num_steps,
+        warmup_diffusion_steps=warmup_diffusion_steps,
     )
     actions = x_t.detach().cpu().numpy()
     if actions.ndim == 3 and actions.shape[0] == 1:

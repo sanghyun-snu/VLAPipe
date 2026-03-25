@@ -3,6 +3,7 @@ import dataclasses
 import logging
 import math
 import pathlib
+import time
 import uuid
 
 from examples.pi0_grpc_native.proto_gen import pi0_pipeline_pb2 as pb2
@@ -21,6 +22,40 @@ import tyro
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+
+
+@dataclasses.dataclass
+class EvalSummary:
+    mode: str
+    total_episodes: int
+    total_successes: int
+    total_requests: int
+    request_latencies_s: list[float]
+    episode_durations_s: list[float]
+
+    @property
+    def success_rate(self) -> float:
+        if self.total_episodes == 0:
+            return 0.0
+        return float(self.total_successes) / float(self.total_episodes)
+
+    @property
+    def mean_request_latency_s(self) -> float:
+        if not self.request_latencies_s:
+            return 0.0
+        return float(np.mean(self.request_latencies_s))
+
+    @property
+    def p95_request_latency_s(self) -> float:
+        if not self.request_latencies_s:
+            return 0.0
+        return float(np.percentile(self.request_latencies_s, 95))
+
+    @property
+    def mean_episode_duration_s(self) -> float:
+        if not self.episode_durations_s:
+            return 0.0
+        return float(np.mean(self.episode_durations_s))
 
 
 def _normalize_action_chunk(actions: np.ndarray) -> np.ndarray:
@@ -64,9 +99,52 @@ class Args:
     video_out_path: str = "data/libero/videos"  # Path to save videos
 
     seed: int = 7  # Random Seed (for reproducibility)
+    execution_mode: str = "org"  # org | v1 | v2
+    compare_all_modes: bool = False
+    warmup_diffusion_steps: int = 1
+    max_inflight_updates: int = 2
+    cache_ttl_ms: int = 0
+    allow_stale_cache: bool = False
+    max_staleness_layers: int = 0
+    drop_late_updates: bool = False
 
 
-def eval_libero(args: Args) -> None:
+def _build_execution_config(args: Args, mode: str) -> pb2.ExecutionConfig:
+    cfg = pb2.ExecutionConfig(require_baseline_equivalence=True)
+    if mode == "v1":
+        cfg.mode = pb2.SUFFIX_EXECUTION_MODE_LAYER_PIPELINE_V1
+        cfg.v1.strict_layer_ordering = True
+        cfg.v1.warmup_diffusion_steps = args.warmup_diffusion_steps
+        cfg.v1.fail_on_missing_layer = True
+        return cfg
+    if mode == "v2":
+        cfg.mode = pb2.SUFFIX_EXECUTION_MODE_ASYNC_CACHE_V2
+        cfg.v2.max_inflight_updates = args.max_inflight_updates
+        cfg.v2.cache_ttl_ms = args.cache_ttl_ms
+        cfg.v2.allow_stale_cache = args.allow_stale_cache
+        cfg.v2.max_staleness_layers = args.max_staleness_layers
+        cfg.v2.drop_late_updates = args.drop_late_updates
+        return cfg
+    raise ValueError(f"Unsupported execution_mode for pipeline request: {mode}")
+
+
+def _infer_actions(stub: pb2_grpc.SuffixServiceStub, request: pb2.EvalRequest, args: Args, mode: str) -> tuple[np.ndarray, float]:
+    t0 = time.perf_counter()
+    if mode == "org":
+        response = stub.Evaluate(request, timeout=args.timeout_s)
+    elif mode in ("v1", "v2"):
+        pipeline_request = pb2.EvaluatePipelineRequest(
+            eval_request=request,
+            execution=_build_execution_config(args, mode),
+        )
+        response = stub.EvaluateLayerPipeline(pipeline_request, timeout=args.timeout_s)
+    else:
+        raise ValueError(f"Unsupported execution_mode: {mode}. Expected one of: org, v1, v2")
+    latency_s = time.perf_counter() - t0
+    return _normalize_action_chunk(proto_to_ndarray(response.actions)), latency_s
+
+
+def eval_libero(args: Args, *, mode: str) -> EvalSummary:
     # Set random seed
     np.random.seed(args.seed)
 
@@ -93,6 +171,8 @@ def eval_libero(args: Args) -> None:
 
     channel = grpc.insecure_channel(f"{args.host}:{args.port}")
     stub = pb2_grpc.SuffixServiceStub(channel)
+    request_latencies_s: list[float] = []
+    episode_durations_s: list[float] = []
 
     try:
         # Start evaluation
@@ -111,6 +191,7 @@ def eval_libero(args: Args) -> None:
             task_episodes, task_successes = 0, 0
             for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
                 logging.info(f"\nTask: {task_description}")
+                episode_start_t = time.perf_counter()
 
                 # Reset environment
                 env.reset()
@@ -172,8 +253,12 @@ def eval_libero(args: Args) -> None:
                                     prompt=str(element.get("prompt", "")),
                                 )
                             )
-                            response = stub.Evaluate(request, timeout=args.timeout_s)
-                            action_chunk = _normalize_action_chunk(proto_to_ndarray(response.actions))
+                            action_chunk, request_latency_s = _infer_actions(stub, request, args, mode)
+                            request_latencies_s.append(request_latency_s)
+                            logging.info(
+                                f"[{mode}] request latency={request_latency_s:.4f}s "
+                                f"task={task_id} episode={episode_idx} t={t}"
+                            )
                             assert (
                                 len(action_chunk) >= args.replan_steps
                             ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
@@ -195,6 +280,8 @@ def eval_libero(args: Args) -> None:
 
                 task_episodes += 1
                 total_episodes += 1
+                episode_duration_s = time.perf_counter() - episode_start_t
+                episode_durations_s.append(episode_duration_s)
 
                 # Save a replay video of the episode
                 suffix = "success" if done else "failure"
@@ -207,6 +294,7 @@ def eval_libero(args: Args) -> None:
 
                 # Log current results
                 logging.info(f"Success: {done}")
+                logging.info(f"[{mode}] episode_duration_s={episode_duration_s:.4f}")
                 logging.info(f"# episodes completed so far: {total_episodes}")
                 logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
 
@@ -218,6 +306,22 @@ def eval_libero(args: Args) -> None:
         logging.info(f"Total episodes: {total_episodes}")
     finally:
         channel.close()
+
+    summary = EvalSummary(
+        mode=mode,
+        total_episodes=total_episodes,
+        total_successes=total_successes,
+        total_requests=len(request_latencies_s),
+        request_latencies_s=request_latencies_s,
+        episode_durations_s=episode_durations_s,
+    )
+    logging.info(
+        f"[{mode}] summary success_rate={summary.success_rate:.4f} "
+        f"mean_request_latency_s={summary.mean_request_latency_s:.4f} "
+        f"p95_request_latency_s={summary.p95_request_latency_s:.4f} "
+        f"mean_episode_duration_s={summary.mean_episode_duration_s:.4f}"
+    )
+    return summary
 
 
 def _get_libero_env(task, resolution, seed):
@@ -250,4 +354,19 @@ def _quat2axisangle(quat):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
-    eval_libero(tyro.cli(Args))
+    args = tyro.cli(Args)
+    if args.compare_all_modes:
+        results = []
+        for mode in ("org", "v1", "v2"):
+            run_args = dataclasses.replace(args, execution_mode=mode)
+            logging.info(f"=== Starting mode={mode} ===")
+            results.append(eval_libero(run_args, mode=mode))
+        logging.info("=== Mode Comparison (org/v1/v2) ===")
+        for result in results:
+            logging.info(
+                f"{result.mode}: success={result.total_successes}/{result.total_episodes} ({result.success_rate * 100:.1f}%) "
+                f"mean_req={result.mean_request_latency_s:.4f}s p95_req={result.p95_request_latency_s:.4f}s "
+                f"mean_ep={result.mean_episode_duration_s:.4f}s requests={result.total_requests}"
+            )
+    else:
+        eval_libero(args, mode=args.execution_mode)

@@ -67,10 +67,103 @@ message EvalResponse {
   string message = 3;
 }
 
+enum SuffixExecutionMode {
+  SUFFIX_EXECUTION_MODE_UNSPECIFIED = 0;
+  SUFFIX_EXECUTION_MODE_LAYER_PIPELINE_V1 = 1;
+  SUFFIX_EXECUTION_MODE_ASYNC_CACHE_V2 = 2;
+}
+
+message LayerPipelineConfig {
+  bool strict_layer_ordering = 1;
+  uint32 warmup_diffusion_steps = 2;
+  bool fail_on_missing_layer = 3;
+}
+
+message AsyncCacheConfig {
+  uint32 max_inflight_updates = 1;
+  uint32 cache_ttl_ms = 2;
+  bool allow_stale_cache = 3;
+  uint32 max_staleness_layers = 4;
+  bool drop_late_updates = 5;
+}
+
+message ExecutionConfig {
+  SuffixExecutionMode mode = 1;
+  bool require_baseline_equivalence = 2;
+
+  oneof mode_config {
+    LayerPipelineConfig v1 = 10;
+    AsyncCacheConfig v2 = 11;
+  }
+}
+
+message EvaluatePipelineRequest {
+  EvalRequest eval_request = 1;
+  ExecutionConfig execution = 2;
+}
+
+enum EvalOperationState {
+  EVAL_OP_STATE_UNSPECIFIED = 0;
+  EVAL_OP_STATE_QUEUED = 1;
+  EVAL_OP_STATE_RUNNING = 2;
+  EVAL_OP_STATE_SUCCEEDED = 3;
+  EVAL_OP_STATE_FAILED = 4;
+  EVAL_OP_STATE_CANCELLED = 5;
+}
+
+message SubmitEvaluateRequest {
+  EvaluatePipelineRequest request = 1;
+  bool wait_for_result = 2;
+}
+
+message SubmitEvaluateResponse {
+  string operation_id = 1;
+  EvalOperationState state = 2;
+  EvalResponse result = 3;
+  string message = 4;
+}
+
+message GetEvaluateResultRequest {
+  string operation_id = 1;
+}
+
+message GetEvaluateResultResponse {
+  string operation_id = 1;
+  EvalOperationState state = 2;
+  EvalResponse result = 3;
+  string error = 4;
+}
+
+message WatchEvaluateRequest {
+  string operation_id = 1;
+}
+
+message EvaluateEvent {
+  string operation_id = 1;
+  EvalOperationState state = 2;
+  int32 layer_idx = 3;
+  int64 cache_epoch = 4;
+  string event = 5;
+  string details = 6;
+}
+
+message CancelEvaluateRequest {
+  string operation_id = 1;
+}
+
+message CancelEvaluateResponse {
+  bool cancelled = 1;
+}
+
 service PrefixService {
   rpc StreamPrefixKV(PrefixRequest) returns (stream KVCacheChunk);
 }
 
 service SuffixService {
   rpc Evaluate(EvalRequest) returns (EvalResponse);
+  rpc EvaluateLayerPipeline(EvaluatePipelineRequest) returns (EvalResponse);
+  rpc SubmitEvaluate(SubmitEvaluateRequest) returns (SubmitEvaluateResponse);
+  rpc GetEvaluateResult(GetEvaluateResultRequest) returns (GetEvaluateResultResponse);
+  rpc WatchEvaluate(WatchEvaluateRequest) returns (stream EvaluateEvent);
+  rpc CancelEvaluate(CancelEvaluateRequest) returns (CancelEvaluateResponse);
 }

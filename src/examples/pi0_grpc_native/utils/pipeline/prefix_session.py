@@ -18,6 +18,8 @@ from ..transport.stream_protocol import tensor_to_proto
 
 
 class PrefixStreamSession:
+    _QUEUE_POLL_INTERVAL_S = 0.2
+
     def __init__(
         self,
         loaded_component: Any,
@@ -132,7 +134,15 @@ class PrefixStreamSession:
                     event="cancelled",
                 )
                 raise asyncio.CancelledError(f"Prefix stream cancelled by client request_id={self._request_id}")
-            queued = await self._payload_queue.get()
+            try:
+                queued = await asyncio.wait_for(
+                    self._payload_queue.get(),
+                    timeout=self._QUEUE_POLL_INTERVAL_S,
+                )
+            except asyncio.TimeoutError:
+                # Periodically wake up so cancellation/timeout checks stay responsive
+                # even when queue.get() is blocked.
+                continue
             if queued is self._sentinel:
                 break
             payload = queued

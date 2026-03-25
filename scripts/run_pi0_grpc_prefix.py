@@ -5,8 +5,11 @@ import argparse
 import asyncio
 
 from examples.pi0_grpc_native.prefix import PrefixServer
+from examples.pi0_grpc_native.utils import PrefixServiceOptions
 from examples.pi0_grpc_native.utils import RuntimePolicyArgs
 from examples.pi0_grpc_native.utils import load_prefix_component
+
+DEFAULT_PREFIX_SERVICE_OPTIONS = PrefixServiceOptions()
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -23,16 +26,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-convert-checkpoint", action="store_true")
     parser.add_argument("--converted-checkpoint-dir", default="")
     parser.add_argument("--convert-precision", choices=["float32", "bfloat16", "float16"], default="bfloat16")
-    parser.add_argument("--stream-queue-size", type=int, default=2)
-    parser.add_argument("--queue-wait-warn-ms", type=float, default=10.0)
-    parser.add_argument("--request-timeout-s", type=float, default=0.0)
+    parser.add_argument("--stream-queue-size", type=int, default=DEFAULT_PREFIX_SERVICE_OPTIONS.stream_queue_size)
+    parser.add_argument("--queue-wait-warn-ms", type=float, default=DEFAULT_PREFIX_SERVICE_OPTIONS.queue_wait_warn_ms)
+    parser.add_argument("--request-timeout-s", type=float, default=DEFAULT_PREFIX_SERVICE_OPTIONS.request_timeout_s)
     parser.add_argument("--prefer-layerwise", dest="prefer_layerwise", action="store_true")
     parser.add_argument("--disable-layerwise", dest="prefer_layerwise", action="store_false")
     parser.add_argument("--allow-fallback", dest="allow_fallback", action="store_true")
     parser.add_argument("--disable-fallback", dest="allow_fallback", action="store_false")
     parser.add_argument("--enable-profiling", action="store_true")
-    parser.add_argument("--profile-log-path", default="")
-    parser.set_defaults(prefer_layerwise=True, allow_fallback=True)
+    parser.add_argument("--profile-log-path", default=DEFAULT_PREFIX_SERVICE_OPTIONS.profile_log_path)
+    parser.set_defaults(
+        prefer_layerwise=DEFAULT_PREFIX_SERVICE_OPTIONS.prefer_layerwise,
+        allow_fallback=DEFAULT_PREFIX_SERVICE_OPTIONS.allow_fallback,
+    )
     return parser
 
 
@@ -51,12 +57,8 @@ def _runtime_policy_args(args: argparse.Namespace) -> RuntimePolicyArgs:
     )
 
 
-async def main_async(args: argparse.Namespace) -> None:
-    loaded_component = load_prefix_component(_runtime_policy_args(args))
-    await PrefixServer(
-        host=args.host,
-        port=args.port,
-        loaded_component=loaded_component,
+def _service_options_from_args(args: argparse.Namespace) -> PrefixServiceOptions:
+    return PrefixServiceOptions(
         stream_queue_size=args.stream_queue_size,
         prefer_layerwise=args.prefer_layerwise,
         allow_fallback=args.allow_fallback,
@@ -64,6 +66,16 @@ async def main_async(args: argparse.Namespace) -> None:
         request_timeout_s=args.request_timeout_s,
         enable_profiling=args.enable_profiling,
         profile_log_path=args.profile_log_path,
+    )
+
+
+async def main_async(args: argparse.Namespace) -> None:
+    loaded_component = load_prefix_component(_runtime_policy_args(args))
+    await PrefixServer(
+        host=args.host,
+        port=args.port,
+        loaded_component=loaded_component,
+        options=_service_options_from_args(args),
     ).serve()
 
 
