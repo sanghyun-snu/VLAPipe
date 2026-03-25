@@ -24,11 +24,16 @@ def _tensorize_inputs(data: dict[str, Any], *, device: str) -> dict[str, Any]:
     return out
 
 
-def build_observation_from_raw(component, raw_policy_input: dict[str, Any]):
-    """Apply policy transforms and build Observation tensor object."""
+def _prepare_component_inputs(component, raw_policy_input: dict[str, Any]) -> tuple[dict[str, Any], model_base.Observation]:
     inputs = component.input_transform(dict(raw_policy_input))
     inputs_torch = _tensorize_inputs(inputs, device=component.device)
-    return model_base.Observation.from_dict(inputs_torch)
+    return inputs, model_base.Observation.from_dict(inputs_torch)
+
+
+def build_observation_from_raw(component, raw_policy_input: dict[str, Any]):
+    """Apply policy transforms and build Observation tensor object."""
+    _inputs, observation = _prepare_component_inputs(component, raw_policy_input)
+    return observation
 
 
 def compute_prefix_cache_from_policy(component, raw_policy_input: dict[str, Any]) -> tuple[torch.Tensor, tuple]:
@@ -61,7 +66,7 @@ def extract_layer_kv(past_key_values: tuple, layer_idx: int) -> tuple[torch.Tens
 def run_suffix_denoise_with_cache(component, raw_policy_input: dict[str, Any], prefix_pad_masks: torch.Tensor, past_key_values: tuple) -> np.ndarray:
     """Run real suffix denoising using externally provided prefix KV cache."""
     model = component.model
-    observation = build_observation_from_raw(component, raw_policy_input)
+    transformed_inputs, observation = _prepare_component_inputs(component, raw_policy_input)
     _images, _img_masks, _lang_tokens, _lang_masks, state = model._preprocess_observation(observation, train=False)  # noqa: SLF001
     bsize = state.shape[0]
     device = state.device
@@ -78,4 +83,13 @@ def run_suffix_denoise_with_cache(component, raw_policy_input: dict[str, Any], p
         v_t = model.denoise_step(state, prefix_pad_masks, model_cache, x_t, expanded_time)
         x_t = x_t + dt * v_t
         time += dt
-    return x_t.detach().cpu().numpy()
+    actions = x_t.detach().cpu().numpy()
+    if actions.ndim == 3 and actions.shape[0] == 1:
+        actions = actions[0]
+    transformed_outputs = component.output_transform(
+        {
+            "state": np.asarray(transformed_inputs["state"]),
+            "actions": np.asarray(actions),
+        }
+    )
+    return np.asarray(transformed_outputs["actions"], dtype=np.float32)

@@ -249,5 +249,5 @@ def _quat2axisangle(quat):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, force=True)
     eval_libero(tyro.cli(Args))

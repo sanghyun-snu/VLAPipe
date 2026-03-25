@@ -41,6 +41,7 @@ class PrefixComponent:
 class SuffixComponent:
     model: PI0Pytorch
     input_transform: Any
+    output_transform: Any
     device: str
     sample_kwargs: dict[str, Any]
 
@@ -56,6 +57,20 @@ def _make_input_transform(train_cfg, checkpoint_dir: Path):
             *data_config.data_transforms.inputs,
             transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
             *data_config.model_transforms.inputs,
+        ]
+    )
+
+
+def _make_output_transform(train_cfg, checkpoint_dir: Path):
+    data_config = train_cfg.data.create(train_cfg.assets_dirs, train_cfg.model)
+    if data_config.asset_id is None:
+        raise ValueError("Asset id is required to load norm stats")
+    norm_stats = checkpoints_lib.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
+    return transforms.compose(
+        [
+            *data_config.model_transforms.outputs,
+            transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+            *data_config.data_transforms.outputs,
         ]
     )
 
@@ -132,5 +147,12 @@ def load_suffix_component(args: RuntimePolicyArgs) -> SuffixComponent | None:
     checkpoint_dir = Path(resolved.checkpoint_dir).expanduser().resolve()
     device = args.policy_device or "cuda"
     input_transform = _make_input_transform(train_cfg, checkpoint_dir)
+    output_transform = _make_output_transform(train_cfg, checkpoint_dir)
     model = _build_split_model(train_cfg, checkpoint_dir, device, SUFFIX_WEIGHT_PREFIXES, _prune_for_suffix)
-    return SuffixComponent(model=model, input_transform=input_transform, device=device, sample_kwargs={})
+    return SuffixComponent(
+        model=model,
+        input_transform=input_transform,
+        output_transform=output_transform,
+        device=device,
+        sample_kwargs={},
+    )
