@@ -171,7 +171,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--execution-mode",
-        choices=["v1_layer_pipeline", "v2_async_cache"],
+        choices=["v1_layer_pipeline", "v2_async_cache", "v3_kv_polisher"],
         default=DEFAULT_SUFFIX_SERVICE_OPTIONS.execution_mode,
     )
     parser.add_argument("--warmup-diffusion-steps", type=int, default=DEFAULT_SUFFIX_SERVICE_OPTIONS.warmup_diffusion_steps)

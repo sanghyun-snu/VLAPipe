@@ -8,6 +8,7 @@ from .request_config import resolve_execution_overrides
 from .registry import make_suffix_execution_strategy
 from .v1_layer_pipeline import V1LayerPipelineStrategy
 from .v2_async_cache import V2AsyncCacheStrategy
+from .v3_kv_polisher import V3KVPolisherStrategy
 from .v2_operation_manager import V2AsyncOperationManager
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "V1LayerPipelineStrategy",
     "V2AsyncOperationManager",
     "V2AsyncCacheStrategy",
+    "V3KVPolisherStrategy",
 ]
