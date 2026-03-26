@@ -6,6 +6,7 @@ import contextlib
 import ctypes
 import ctypes.util
 from dataclasses import dataclass
+import numpy as np
 import socket
 import time
 from collections import OrderedDict
@@ -53,6 +54,18 @@ class ResolveTiming:
     sidecar_lookup_s: float
     ipc_open_s: float
     d2d_copy_s: float
+
+
+class _CudaArrayInterfaceView:
+    def __init__(self, *, ptr: int, shape: tuple[int, ...], typestr: str) -> None:
+        self.__cuda_array_interface__ = {
+            "shape": shape,
+            "strides": None,
+            "typestr": typestr,
+            "data": (int(ptr), False),
+            "version": 3,
+            "stream": 0,
+        }
 
 
 class _CudaIpcMemHandle(ctypes.Structure):
@@ -180,6 +193,23 @@ def _dtype_from_name(name: str) -> torch.dtype:
     return mapping[name]
 
 
+def _numpy_typestr_from_torch_dtype(dtype: torch.dtype) -> str:
+    mapping: dict[torch.dtype, str] = {
+        torch.float32: np.dtype(np.float32).str,
+        torch.float16: np.dtype(np.float16).str,
+        torch.bfloat16: np.dtype(np.uint16).str,
+        torch.float64: np.dtype(np.float64).str,
+        torch.int64: np.dtype(np.int64).str,
+        torch.int32: np.dtype(np.int32).str,
+        torch.uint8: np.dtype(np.uint8).str,
+        torch.int8: np.dtype(np.int8).str,
+        torch.bool: np.dtype(np.bool_).str,
+    }
+    if dtype not in mapping:
+        raise ValueError(f"unsupported dtype for __cuda_array_interface__: {dtype}")
+    return mapping[dtype]
+
+
 def _require_sidecar_reachable(sidecar_address: str) -> None:
     try:
         host, port_text = sidecar_address.rsplit(":", 1)
@@ -218,8 +248,8 @@ class PrefixGpuIpcPublisher:
         name: str,
         tensor: torch.Tensor,
         *,
-        synchronize: bool = True,
         publish_to_sidecar: bool | None = None,
+        prune_live_tensors: bool = True,
     ) -> GpuIpcTensorHandle:
         if not tensor.is_cuda:
             raise RuntimeError(
@@ -231,16 +261,14 @@ class PrefixGpuIpcPublisher:
         if tensor.is_contiguous() and tensor.storage_offset() == 0:
             contiguous = tensor
         else:
-            contiguous = tensor.contiguous().clone()
+            contiguous = tensor.contiguous()
 
         device_index = contiguous.device.index if contiguous.device.index is not None else 0
-        # Correctness-first barrier: ensure producer-side writes are visible before exporting handle.
-        if synchronize:
-            torch.cuda.synchronize(device_index)
         handle_bytes = _cuda_runtime().get_mem_handle_bytes(contiguous.data_ptr())
         handle_id = _encode_handle_id(handle_bytes)
         self._live_tensors[handle_id] = (contiguous, time.monotonic())
-        self._prune_live_tensors()
+        if prune_live_tensors:
+            self._prune_live_tensors()
         result = GpuIpcTensorHandle(
             handle_id=handle_id,
             shape=tuple(int(v) for v in contiguous.shape),
@@ -267,19 +295,18 @@ class PrefixGpuIpcPublisher:
                 f"gpu_ipc requires CUDA tensor request_id={request_id} layer_idx={layer_idx} "
                 f"got device={first_tensor.device}"
             )
-        device_index = first_tensor.device.index if first_tensor.device.index is not None else 0
-        torch.cuda.synchronize(device_index)
         handles = {
             name: self.publish_tensor(
                 request_id,
                 layer_idx,
                 name,
                 tensor,
-                synchronize=False,
                 publish_to_sidecar=False,
+                prune_live_tensors=False,
             )
             for name, tensor in tensors.items()
         }
+        self._prune_live_tensors()
         if self._publish_to_sidecar_enabled:
             self._publish_many_to_sidecar(request_id, layer_idx, handles)
         return handles
@@ -353,13 +380,18 @@ class SuffixGpuIpcResolver:
 
     def __init__(self, sidecar_address: str, *, resolve_mode: str = "direct") -> None:
         self._sidecar_address = sidecar_address
-        _require_sidecar_reachable(self._sidecar_address)
         self._resolve_mode = validate_gpu_ipc_resolve_mode(resolve_mode)
-        self._sidecar_channel = grpc.insecure_channel(self._sidecar_address)
-        self._sidecar_stub = sidecar_pb2_grpc.GpuIpcSidecarStub(self._sidecar_channel)
+        self._sidecar_channel = None
+        self._sidecar_stub = None
+        if self._resolve_mode != "direct":
+            _require_sidecar_reachable(self._sidecar_address)
+            self._sidecar_channel = grpc.insecure_channel(self._sidecar_address)
+            self._sidecar_stub = sidecar_pb2_grpc.GpuIpcSidecarStub(self._sidecar_channel)
         self._opened_cache: OrderedDict[str, _OpenedDevicePointer] = OrderedDict()
         self._max_opened_handles = 4096
         self._opened_ttl_s = 60.0
+        self._active_device_index: int | None = None
+        self._device_cache: dict[int, torch.device] = {}
 
     def resolve_tensor(self, request_id: str, layer_idx: int, name: str, handle: pb2.GpuIpcHandle) -> torch.Tensor:
         tensor, _timing = self.resolve_tensor_timed(request_id, layer_idx, name, handle)
@@ -400,23 +432,33 @@ class SuffixGpuIpcResolver:
         shape = tuple(int(v) for v in effective_handle.shape)
         if not shape:
             raise ValueError(f"invalid empty shape in gpu_ipc handle request_id={request_id} layer_idx={layer_idx}")
-        torch.cuda.set_device(device_index)
-        out = torch.empty(shape, dtype=dtype, device=torch.device("cuda", device_index))
+        if self._active_device_index != device_index:
+            torch.cuda.set_device(device_index)
+            self._active_device_index = device_index
+        device = self._device_cache.get(device_index)
+        if device is None:
+            device = torch.device("cuda", device_index)
+            self._device_cache[device_index] = device
         src_ptr, ipc_open_s = self._get_or_open_device_ptr(effective_handle.handle_id)
-        copy_start_t = time.perf_counter()
-        _cuda_runtime().memcpy_d2d(out.data_ptr(), src_ptr, int(effective_handle.nbytes))
-        d2d_copy_s = time.perf_counter() - copy_start_t
-        self._prune_opened_cache()
+        typestr = _numpy_typestr_from_torch_dtype(dtype)
+        alias_start_t = time.perf_counter()
+        alias_view = _CudaArrayInterfaceView(ptr=src_ptr, shape=shape, typestr=typestr)
+        out = torch.as_tensor(alias_view, device=device)
+        if dtype == torch.bfloat16:
+            out = out.view(torch.bfloat16)
+        alias_s = time.perf_counter() - alias_start_t
         return out, ResolveTiming(
             source=source,
             sidecar_lookup_s=sidecar_lookup_s,
             ipc_open_s=ipc_open_s,
-            d2d_copy_s=d2d_copy_s,
+            d2d_copy_s=alias_s,
         )
 
     def _resolve_handle_from_sidecar(
         self, request_id: str, layer_idx: int, name: str
     ) -> sidecar_pb2.GpuIpcHandle | None:
+        if self._sidecar_stub is None:
+            return None
         try:
             response = self._sidecar_stub.ResolveHandle(
                 sidecar_pb2.ResolveHandleRequest(
@@ -454,17 +496,9 @@ class SuffixGpuIpcResolver:
         return dev_ptr, ipc_open_s
 
     def _prune_opened_cache(self) -> None:
-        now = time.monotonic()
-        while self._opened_cache and len(self._opened_cache) > self._max_opened_handles:
-            _oldest_key, oldest = self._opened_cache.popitem(last=False)
-            _cuda_runtime().close_mem_handle(oldest.dev_ptr)
-        while self._opened_cache:
-            oldest_key = next(iter(self._opened_cache))
-            oldest = self._opened_cache[oldest_key]
-            if (now - oldest.last_used_s) <= self._opened_ttl_s:
-                break
-            _cuda_runtime().close_mem_handle(oldest.dev_ptr)
-            self._opened_cache.pop(oldest_key, None)
+        # Zero-copy alias tensors may still reference opened pointers.
+        # Keep handles for resolver lifetime and release all in close().
+        return
 
     def close(self) -> None:
         while self._opened_cache:

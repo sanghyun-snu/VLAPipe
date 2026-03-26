@@ -17,7 +17,7 @@ class PrefixServiceOptions:
     profile_log_path: str = ""
     kv_transfer_mode: str = "gpu_ipc"
     gpu_ipc_prefix_sidecar_address: str = "127.0.0.1:55062"
-    gpu_ipc_publish_sidecar: bool = True
+    gpu_ipc_publish_sidecar: bool = False
 
     def to_pipeline_config(self) -> PrefixPipelineConfig:
         return PrefixPipelineConfig(

@@ -165,7 +165,7 @@ async def _stop_sidecar_process(process: asyncio.subprocess.Process | None) -> N
 def _should_launch_sidecar(args: argparse.Namespace) -> bool:
     if args.with_sidecar is not None:
         return bool(args.with_sidecar)
-    return args.kv_transfer_mode == "gpu_ipc"
+    return args.kv_transfer_mode == "gpu_ipc" and bool(args.gpu_ipc_publish_sidecar)
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -176,7 +176,7 @@ async def main_async(args: argparse.Namespace) -> None:
             args.sidecar_address,
             args.sidecar_ready_timeout_s,
         )
-    elif args.kv_transfer_mode == "gpu_ipc":
+    elif args.kv_transfer_mode == "gpu_ipc" and args.gpu_ipc_publish_sidecar:
         await _wait_for_port_ready(args.sidecar_address, args.sidecar_ready_timeout_s)
         print(f"[prefix-runner] using existing sidecar address={args.sidecar_address}")
 

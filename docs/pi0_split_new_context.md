@@ -53,3 +53,22 @@
 ## Notes
 - If suffix mode is `sidecar_only` or `sidecar_fallback`, prefix must publish to sidecar (`--gpu-ipc-publish-sidecar`).
 - This patch does not change model math; parity differences are likely from forward-path/mask/cache semantics, not this transport optimization.
+
+## Latest Benchmark Snapshot (changed-only)
+- Command:
+  - `uv run python scripts/benchmark_split_changed_only.py --policy libero --checkpoint-map-json examples/checkpoint_map_pytorch.json --policy-device cuda --num-requests 20 --warmup-runs 1`
+- Result:
+  - A (`sidecar_on`): `emit_overhead mean=0.951ms`, `mean_eval=315.710ms`
+  - B (`direct_only`): `emit_overhead mean=0.194ms`, `mean_eval=295.343ms`
+  - Delta: `emit_overhead -0.756ms/layer`, `eval -20.367ms/request`
+
+## How far can emit optimization go?
+- From this run: `count=378` events over `20` requests -> about `18.9` emitted layers/request.
+- Current direct-only emit cost per request:
+  - `0.194ms * 18.9 ~= 3.67ms/request`
+- Theoretical best-case gain from emit path alone (if emit overhead becomes zero):
+  - at most about `3.67ms/request`
+- So, with current direct-only path:
+  - lower bound from emit-only optimization is roughly `295.343 - 3.67 ~= 291.67ms`
+- Implication:
+  - If full baseline is much lower than ~292ms, closing the remaining gap requires non-emit optimizations (denoise compute, resolve lifetime, scheduler overlap, etc.), not just prefix emit path tuning.
